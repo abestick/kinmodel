@@ -1,14 +1,40 @@
 from abc import ABCMeta, abstractmethod
-from new_skel import Skel
+#from new_skel import Skel
 import numpy as np
 import numpy.linalg as la
 import scipy.optimize as opt
-import se3
+#import se3
 from math import pi, log10
 import json
 
 FILENAME = '../data/scara.bvh'
 VARS = {'l_0':0.5, 'l_1':2.0, 'l_2':1.0}
+
+np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
+
+def new_GeometricPrimitive(input_data):
+    homog_array = None
+    #If the input is a GeometricPrimitive
+    try:
+        homog_array = input_data.homog()
+    except AttributeError:
+        #Otherwise, if it's an array-like object
+        homog_array = np.asarray(input_data)
+        homog_array = homog_array.squeeze()
+
+    if homog_array.shape == (4,4):
+        return Transform(homog_array)
+    elif homog_array.shape == (3,3):
+        return Rotation(homog_array)
+    elif homog_array.shape == (4,) and homog_array[3] == 1:
+        return Point(homog_array)
+    elif homog_array.shape == (3,):
+        return Point()
+    elif homog_array.shape == (4,) and homog_array[3] == 0:
+        return Vector(homog_array)
+    else:
+        raise TypeError('input_data must be array-like or a GeometricPrimitive')
+
 
 #Geometric primitives
 class GeometricPrimitive():
@@ -18,16 +44,20 @@ class GeometricPrimitive():
     def homog(self):
         pass
 
-    @abstractmethod
-    def dot(self):
-        pass
-
-    @abstractmethod
-    def to_list(self):
-        pass
+    def __repr__(self):
+        output = self.__class__.__name__ + ":\n" + str(self.homog())
+        return output
 
     def __mul__(self, other):
-        return self.dot(other)
+        homog1 = self.homog()
+        homog2 = other.homog()
+
+        #Check that dimensions are compatible
+        if homog1.shape != (4,4):
+            raise TypeError("Dimension mismatch - can't compose primitives in this order")
+
+        homog_result = homog1.dot(homog2)
+        return new_GeometricPrimitive(homog_result)
 
 
 class Joint:
@@ -67,214 +97,173 @@ class Joint:
                 json_dict[attrib] = getattr(self, attrib)
         return json_dict
 
-class Transform:
+class Transform(GeometricPrimitive):
     """
     g = Transform(...)  element of SE(3)
 
         .rot() - Rotation object
         .trans() - Vector object
-        .homog() - 4 x 4 - homogeneous transformation ndarray
-        .dot(x) - compose the transform with another primitive x
-
-        .p - 3 x 1 - position vector
-        .R - 3 x 3 - rotation matrix
+        .homog() - (4,4) - homogeneous transformation ndarray
+        .p() - (3,) - translation ndarray
+        .R() - (3,3) - rotation ndarray
     """
-    def __init__(self, p=np.zeros((3,1)), R=np.identity(3), homog=None, copy=None):
-        if copy is not None:
-            self.p = copy.p.copy()
-            self.R = copy.R.copy()
-        elif homog is not None:
-            self.p = homog[:3,3]
-            self.R = homog[:3,:3]
-        elif p is not None and R is not None:
-            self.p = p
-            self.R = R
+    def __init__(self, homog_array=None):
+        if homog_array is None:
+            self._H = np.identity(4)
         else:
-            raise TypeError('You must provide either the initial transform coordinates or another Transform to copy')
-        self.H = se3.homog(self.p,self.R)
-
-    def __repr__(self):
-        #repr = 'p=%s, R=%s' % (self.p.flatten(),self.R.flatten())
-        repr = '%s' % (self.H)
-        return repr
+            if homog_array.shape != (4,4):
+                raise ValueError('Input ndarray must be (4,4)')
+            self._H = homog_array
 
     def homog(self):
-        return self.H
-        #return se3.homog(self.p,self.R)
+        return self._H
 
-    def dot(self, x):
-        if isinstance(x, Transform):
-            return Transform(homog=self.homog().dot(x.homog()))
-        elif isinstance(x, Rotation):
-            return self.dot(x.transform())
-        elif isinstance(x, Vector):
-            return Vector(homog=self.homog().dot(x.homog()))
-        elif isinstance(x, Point):
-            return Point(homog=self.homog().dot(x.homog()))
-        else:
-            raise TypeError('x must be a Transform, Point, or Vector')
+    def trans(self):
+        p = np.append(self._H[0:3,3], 0)
+        return Vector(p)
 
-    def position(self):
-        return Point(x=self.p.copy()[:,None])
+    def rot(self):
+        return Rotation(self._H.copy())
 
-    def orientation(self):
-        return Rotation(matrix=self.R.copy())
+    def p(self):
+        return self._H[0:3,3]
 
-    def adjoint(self):
-        adj = np.zeros((6,6))
-        adj[:3,:3] = self.R
-        adj[3:,3:] = self.R
-        adj[3:,:3] = se3.skew(self.p).dot(self.R)
-        return adj
+    def R(self):
+        return self._H[0:3,0:3]
 
-    def _json(self):
-        return self.homog().tolist()
+    # def adjoint(self):
+    #     adj = np.zeros((6,6))
+    #     adj[:3,:3] = self.R
+    #     adj[3:,3:] = self.R
+    #     adj[3:,:3] = se3.skew(self.p).dot(self.R)
+    #     return adj
 
-class Twist:
-    """ xi = Twist(...)  element of se(3)
+    # def _json(self):
+    #     return self.homog().tolist()
 
-        .xi() - 6 x 1 - twist coordinates ndarray (om, v)
-        .omega() - 3 x 1 - rotation axis ndarray
-        .nu() - 3 x 1 - translation direction ndarray
-        .exp(theta) - Transform object
 
-        ._xi - 6 x 1 - twist coordinates (om, v)
-    """
-    def __init__(self, omega=None, nu=None, copy=None):
-        if copy is not None:
-            self._xi = copy.xi().copy()
-        elif omega is not None and nu is not None:
-            omega = np.asarray(omega)
-            nu = np.asarray(nu)
-            omega = np.reshape(omega, (3,1))
-            nu = np.reshape(nu, (3,1))
-            assert omega.shape == (3,1) and nu.shape == (3,1)
-            self._xi = np.vstack((omega, nu))
-        else:
-            raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
+# class Twist:
+#     """ xi = Twist(...)  element of se(3)
 
-    def xi(self):
-        return _xi
+#         .xi() - 6 x 1 - twist coordinates ndarray (om, v)
+#         .omega() - 3 x 1 - rotation axis ndarray
+#         .nu() - 3 x 1 - translation direction ndarray
+#         .exp(theta) - Transform object
 
-    def omega(self):
-        return _xi[:3,:]
+#         ._xi - 6 x 1 - twist coordinates (om, v)
+#     """
+#     def __init__(self, omega=None, nu=None, copy=None):
+#         if copy is not None:
+#             self._xi = copy.xi().copy()
+#         elif omega is not None and nu is not None:
+#             omega = np.asarray(omega)
+#             nu = np.asarray(nu)
+#             omega = np.reshape(omega, (3,1))
+#             nu = np.reshape(nu, (3,1))
+#             assert omega.shape == (3,1) and nu.shape == (3,1)
+#             self._xi = np.vstack((omega, nu))
+#         else:
+#             raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
 
-    def nu(self):
-        return _xi[3:,:]
+#     def xi(self):
+#         return _xi
 
-    def exp(self, theta):
-        return Transform(homog=se3.expse3(self._xi, theta))
+#     def omega(self):
+#         return _xi[:3,:]
 
-    def _json(self):
-        return self._xi.squeeze().tolist()
+#     def nu(self):
+#         return _xi[3:,:]
 
-class Rotation:
+#     def exp(self, theta):
+#         return Transform(homog=se3.expse3(self._xi, theta))
+
+#     def _json(self):
+#         return self._xi.squeeze().tolist()
+
+class Rotation(GeometricPrimitive):
     """ R = Rotation(...)  element of SO(3)
 
-        .matrix() - 3 x 3 - rotation matrix ndarray
-        .homog() - 4 x 4 - homogeneous coordinates ndarray (for a pure rotation)
-        .dot(x) - compose the rotation with another Rotation x
-
-        ._R - 3 x 3 - rotation matrix
+        .R() - (3,3) - rotation matrix ndarray
+        .homog() - (4,4) - homogeneous coordinates ndarray (for a pure rotation)
     """
-    def __init__(self, matrix=np.identity(3), copy=None):
-        if copy is not None:
-            self._R = copy._R().copy()
-        elif matrix is not None:
-            R = np.asarray(matrix)
-            assert R.shape == (3,3)
-            self._R = R
+    def __init__(self, homog_array=None):
+        if homog_array is None:
+            self._R = np.identity(3)
         else:
-            raise TypeError('You must provide either the rotation matrix or another Rotation to copy')
+            if homog_array.shape != (4,4):
+                raise ValueError('Input ndarray must be (4,4)')
+            self._R = homog_array[0:3,0:3]
 
-    def matrix(self):
+    def R(self):
         return self._R
 
     def homog(self):
-        return se3.homog(np.zeros((3,1)), self._R)
+        homog_matrix = np.identity(4)
+        homog_matrix[0:3,0:3] = self._R
+        return homog_matrix
 
-    def transform(self):
-        return Transform(homog=self.homog())
+    # def _json(self):
+    #     return self.matrix().tolist()
 
-    def dot(self, x):
-        if isinstance(x, Rotation):
-            return Rotation(matrix=self.matrix().dot(x.matrix()))
-        if isinstance(x, Transform):
-            return self.transform().dot(x)
-        else:
-            raise TypeError('x must be another Rotation')
+    # def __repr__(self):
+    #     repr = '%s' % (self._R)
+    #     return repr
 
-    def _json(self):
-        return self.matrix().tolist()
-
-    def __repr__(self):
-        repr = '%s' % (self._R)
-        return repr
-
-class Vector:
+class Vector(GeometricPrimitive):
     """ x = Vector(...)  translation in R^3
 
-        .homog() - 4 x 1 - homogeneous coordinates ndarray (x, 0)
-        .x() - 3 x 1 - cartesian coordinates ndarray
-
-        ._homog - 4 x 1 - homogeneous coodrinates
+        .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
+        .q() - (3,) - cartesian coordinates ndarray
     """
-    def __init__(self, x=None, copy=None):
-        if copy is not None:
-            self._homog = copy._homog().copy()
-        elif x is not None:
-            x = np.asarray(x)
-            x = np.reshape(x, (3,1))
-            assert x.shape == (3,1)
-            self._homog = np.vstack((x, np.zeros((1,1))))
+    def __init__(self, homog_array=None):
+        if homog_array is None:
+            self._H = np.zeros(4)
         else:
-            raise TypeError('You must provide either the vector coordinates or another Vector to copy')
+            if homog_array.shape != (4,):
+                raise ValueError('Input ndarray must be (4,)')
+            self._H = homog_array
 
-    def x(self):
-        return self._homog[:3,:]
+    def q(self):
+        return self._H[0:3]
 
     def homog(self):
-        return self._homog
+        return self._H
 
     def norm(self):
-        return la.norm(self.x())
+        return la.norm(self.q())
 
-    def _json(self):
-        return self.homog().squeeze().tolist()
+    # def _json(self):
+    #     return self.homog().squeeze().tolist()
 
-class Point:
+class Point(GeometricPrimitive):
     """ x = Point(...)  point in R^3
 
-        .homog() - 4 x 1 - homogeneous coordinates ndarray (x, 1)
-        .x() - 3 x 1 - cartesian coordinates ndarray
-
-        ._homog - 4 x 1 - homogeneous coodrinates
+        .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
+        .q() - (3,) - cartesian coordinates ndarray
     """
-    def __init__(self, x=None, copy=None):
-        if copy is not None:
-            self._homog = copy._homog().copy()
-        elif x is not None:
-            x = np.asarray(x)
-            x = np.reshape(x, (3,1))
-            assert x.shape == (3,1), 'x is not (3,1)'
-            self._homog = np.vstack((x, np.ones((1,1))))
+    def __init__(self, homog_array=None):
+        if homog_array is None:
+            self._H = np.zeros(4)
+            self._H[3] = 1
         else:
-            raise TypeError('You must provide either the point coordinates or another Point to copy')
+            if homog_array.shape != (4,):
+                raise ValueError('Input ndarray must be (4,)')
+            self._H = homog_array
 
-    def x(self):
-        return self._homog[:3,:]
+    def q(self):
+        return self._H[0:3]
 
     def homog(self):
-        return self._homog
+        return self._H
 
-    def diff(self, x):
-        return Vector(x=self.x() - x.x())
+    # def diff(self, x):
+    #     return Vector(x=self.q() - x.q())
 
     def norm(self):
-        return la.norm(self.x())
+        return la.norm(self.q())
 
-    def _json(self):
-        return self.homog().squeeze().tolist()
+    # def _json(self):
+    #     return self.homog().squeeze().tolist()
 
 def list_to_primitive(orig_obj):
     try:
