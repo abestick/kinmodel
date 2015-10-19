@@ -1,0 +1,540 @@
+from abc import ABCMeta, abstractmethod
+from new_skel import Skel
+import numpy as np
+import numpy.linalg as la
+import scipy.optimize as opt
+import se3
+from math import pi, log10
+import json
+
+FILENAME = '../data/scara.bvh'
+VARS = {'l_0':0.5, 'l_1':2.0, 'l_2':1.0}
+
+#Geometric primitives
+class GeometricPrimitive():
+    __metaclass__ = ABCMeta
+
+    @abstractmethod
+    def homog(self):
+        pass
+
+    @abstractmethod
+    def dot(self):
+        pass
+
+    @abstractmethod
+    def to_list(self):
+        pass
+
+    def __mul__(self, other):
+        return self.dot(other)
+
+
+class Joint:
+    """ j = Joint(...) a joint in a kinematic tree
+
+        .json(filename) - saves the kinematic tree to the specified file
+
+        .children - list of other Joint objects
+        .features - features attached to the output of this joint (Transforms)
+        .frames - fixed frames attached to the output of this joint (Transforms)
+        .parent - the parent Joint (only present if not the root)
+        .twist - the twist coordinates of the joint (only present if not the root)
+    """
+    def __init__(self, name=None, children={}, features={},
+                 frames={}, parent=None, twist=None):
+        
+        self.children = children #Children of the joint (other Joints)
+        self.features = features #Features attached to the joint's output (Transforms)
+        #self.frames = frames #Fixed frames attached to the joint's output (Transforms)
+
+        if parent is not None:
+            self.parent = parent
+            self.twist = twist
+
+    def json(self, filename=None):
+        if filename is None:
+            return json.dumps(self, default=lambda o: o._json())
+        else:
+            with open(filename) as output_file:
+                json.dump(self, output_file, default=lambda o: o._json())
+
+    def _json(self):
+        ATTRIBS = ['twist', 'features', 'children']
+        json_dict = {}
+        for attrib in ATTRIBS:
+            if hasattr(self, attrib):
+                json_dict[attrib] = getattr(self, attrib)
+        return json_dict
+
+class Transform:
+    """
+    g = Transform(...)  element of SE(3)
+
+        .rot() - Rotation object
+        .trans() - Vector object
+        .homog() - 4 x 4 - homogeneous transformation ndarray
+        .dot(x) - compose the transform with another primitive x
+
+        .p - 3 x 1 - position vector
+        .R - 3 x 3 - rotation matrix
+    """
+    def __init__(self, p=np.zeros((3,1)), R=np.identity(3), homog=None, copy=None):
+        if copy is not None:
+            self.p = copy.p.copy()
+            self.R = copy.R.copy()
+        elif homog is not None:
+            self.p = homog[:3,3]
+            self.R = homog[:3,:3]
+        elif p is not None and R is not None:
+            self.p = p
+            self.R = R
+        else:
+            raise TypeError('You must provide either the initial transform coordinates or another Transform to copy')
+        self.H = se3.homog(self.p,self.R)
+
+    def __repr__(self):
+        #repr = 'p=%s, R=%s' % (self.p.flatten(),self.R.flatten())
+        repr = '%s' % (self.H)
+        return repr
+
+    def homog(self):
+        return self.H
+        #return se3.homog(self.p,self.R)
+
+    def dot(self, x):
+        if isinstance(x, Transform):
+            return Transform(homog=self.homog().dot(x.homog()))
+        elif isinstance(x, Rotation):
+            return self.dot(x.transform())
+        elif isinstance(x, Vector):
+            return Vector(homog=self.homog().dot(x.homog()))
+        elif isinstance(x, Point):
+            return Point(homog=self.homog().dot(x.homog()))
+        else:
+            raise TypeError('x must be a Transform, Point, or Vector')
+
+    def position(self):
+        return Point(x=self.p.copy()[:,None])
+
+    def orientation(self):
+        return Rotation(matrix=self.R.copy())
+
+    def adjoint(self):
+        adj = np.zeros((6,6))
+        adj[:3,:3] = self.R
+        adj[3:,3:] = self.R
+        adj[3:,:3] = se3.skew(self.p).dot(self.R)
+        return adj
+
+    def _json(self):
+        return self.homog().tolist()
+
+class Twist:
+    """ xi = Twist(...)  element of se(3)
+
+        .xi() - 6 x 1 - twist coordinates ndarray (om, v)
+        .omega() - 3 x 1 - rotation axis ndarray
+        .nu() - 3 x 1 - translation direction ndarray
+        .exp(theta) - Transform object
+
+        ._xi - 6 x 1 - twist coordinates (om, v)
+    """
+    def __init__(self, omega=None, nu=None, copy=None):
+        if copy is not None:
+            self._xi = copy.xi().copy()
+        elif omega is not None and nu is not None:
+            omega = np.asarray(omega)
+            nu = np.asarray(nu)
+            omega = np.reshape(omega, (3,1))
+            nu = np.reshape(nu, (3,1))
+            assert omega.shape == (3,1) and nu.shape == (3,1)
+            self._xi = np.vstack((omega, nu))
+        else:
+            raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
+
+    def xi(self):
+        return _xi
+
+    def omega(self):
+        return _xi[:3,:]
+
+    def nu(self):
+        return _xi[3:,:]
+
+    def exp(self, theta):
+        return Transform(homog=se3.expse3(self._xi, theta))
+
+    def _json(self):
+        return self._xi.squeeze().tolist()
+
+class Rotation:
+    """ R = Rotation(...)  element of SO(3)
+
+        .matrix() - 3 x 3 - rotation matrix ndarray
+        .homog() - 4 x 4 - homogeneous coordinates ndarray (for a pure rotation)
+        .dot(x) - compose the rotation with another Rotation x
+
+        ._R - 3 x 3 - rotation matrix
+    """
+    def __init__(self, matrix=np.identity(3), copy=None):
+        if copy is not None:
+            self._R = copy._R().copy()
+        elif matrix is not None:
+            R = np.asarray(matrix)
+            assert R.shape == (3,3)
+            self._R = R
+        else:
+            raise TypeError('You must provide either the rotation matrix or another Rotation to copy')
+
+    def matrix(self):
+        return self._R
+
+    def homog(self):
+        return se3.homog(np.zeros((3,1)), self._R)
+
+    def transform(self):
+        return Transform(homog=self.homog())
+
+    def dot(self, x):
+        if isinstance(x, Rotation):
+            return Rotation(matrix=self.matrix().dot(x.matrix()))
+        if isinstance(x, Transform):
+            return self.transform().dot(x)
+        else:
+            raise TypeError('x must be another Rotation')
+
+    def _json(self):
+        return self.matrix().tolist()
+
+    def __repr__(self):
+        repr = '%s' % (self._R)
+        return repr
+
+class Vector:
+    """ x = Vector(...)  translation in R^3
+
+        .homog() - 4 x 1 - homogeneous coordinates ndarray (x, 0)
+        .x() - 3 x 1 - cartesian coordinates ndarray
+
+        ._homog - 4 x 1 - homogeneous coodrinates
+    """
+    def __init__(self, x=None, copy=None):
+        if copy is not None:
+            self._homog = copy._homog().copy()
+        elif x is not None:
+            x = np.asarray(x)
+            x = np.reshape(x, (3,1))
+            assert x.shape == (3,1)
+            self._homog = np.vstack((x, np.zeros((1,1))))
+        else:
+            raise TypeError('You must provide either the vector coordinates or another Vector to copy')
+
+    def x(self):
+        return self._homog[:3,:]
+
+    def homog(self):
+        return self._homog
+
+    def norm(self):
+        return la.norm(self.x())
+
+    def _json(self):
+        return self.homog().squeeze().tolist()
+
+class Point:
+    """ x = Point(...)  point in R^3
+
+        .homog() - 4 x 1 - homogeneous coordinates ndarray (x, 1)
+        .x() - 3 x 1 - cartesian coordinates ndarray
+
+        ._homog - 4 x 1 - homogeneous coodrinates
+    """
+    def __init__(self, x=None, copy=None):
+        if copy is not None:
+            self._homog = copy._homog().copy()
+        elif x is not None:
+            x = np.asarray(x)
+            x = np.reshape(x, (3,1))
+            assert x.shape == (3,1), 'x is not (3,1)'
+            self._homog = np.vstack((x, np.ones((1,1))))
+        else:
+            raise TypeError('You must provide either the point coordinates or another Point to copy')
+
+    def x(self):
+        return self._homog[:3,:]
+
+    def homog(self):
+        return self._homog
+
+    def diff(self, x):
+        return Vector(x=self.x() - x.x())
+
+    def norm(self):
+        return la.norm(self.x())
+
+    def _json(self):
+        return self.homog().squeeze().tolist()
+
+def list_to_primitive(orig_obj):
+    try:
+        arr = np.array(orig_obj)
+        if arr.shape == (4,):
+            if arr[3] == 1:
+                return Point(x=arr[0:3])
+            elif arr[3] == 0:
+                return Vector(x=arr[0:3])
+        elif arr.shape == (4,4):
+            return Transform(homog=arr)
+        elif arr.shape == (3,3):
+            return Rotation(matrix=arr)
+        elif arr.shape == (6,):
+            return Twist(omega=arr[0:3], nu=arr[3:6])
+    except TypeError:
+        pass
+    return orig_obj
+
+def obj_to_joint(orig_obj):
+    if hasattr(orig_obj, 'children') and hasattr(orig_obj, 'frames') and hasattr(orig_obj, 'features'):
+        return Joint(**orig_obj)
+    else:
+        return orig_obj
+
+    # else:
+    #     raise TypeError('The list could not be converted to a geometric primitive')
+
+class IKSolver:
+    """Contains the kinematic tree, cost functions, and constraints associated
+    with a given inverse kinematics problem.
+
+    Methods allow the IK problem to be solved for different initial
+    configurations
+    """
+    def __init__(self, tree, constraints=[], costs=[]):
+        self.tree = tree
+        self.constraints = constraints
+        self.costs = costs
+        self.objective, self.jacobian = self._set_cost_functions()
+
+    #Use a function factory to create the objective and Jacobian functions
+    def _set_cost_functions(self, const_weight=1.0):
+        #Define the objective function
+        def objective(config):
+            const_sum = const_weight * sum([const.get_cost(config) for const in self.constraints])
+            cost_sum = sum([cost.get_cost(config) for cost in self.costs])
+            return const_sum + cost_sum
+
+        #Define the Jacobian of the objective function
+        def jacobian(config):
+            const_sum = const_weight * sum([const.get_jacobian(config) for const in self.constraints])
+            cost_sum = sum([cost.get_jacobian(config) for cost in self.costs])
+            return const_sum + cost_sum
+
+        return objective, jacobian
+
+    def solve_ik(self, init_config, weight_consts=True):
+        MAX_CONST_WT = 1.0e6
+        NUM_ITER = 10
+        DEBUG = True
+        JAC_TOL = 1e-8
+
+        if weight_consts:
+            #Generate the constraint weights for each iteration
+            weights = np.logspace(0, log10(MAX_CONST_WT), num=NUM_ITER)
+
+            #Run the optimization
+            result = None
+            for weight in weights:
+                self.objective, self.jacobian = self._set_cost_functions(weight)
+                if result is None:
+                    result = opt.minimize(self.objective, init_config, method='BFGS', 
+                              jac=self.jacobian, options={'gtol':JAC_TOL})
+                    # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
+                    #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
+                else:
+                    result = opt.minimize(self.objective, result.x, method='BFGS', 
+                              jac=self.jacobian, options={'gtol':JAC_TOL})
+                    # result = opt.fmin_bfgs(self.objective, result.x, method='BFGS', 
+                    #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
+
+                #Stop iterating if the optimization failed to converge
+                if not result.success:
+                    break
+
+        #If we're not weighting the constraint costs, just run once
+        else:
+            self.objective, self.jacobian = self._set_cost_functions()
+            result = opt.minimize(self.objective, init_config, method='BFGS', 
+                              jac=self.jacobian, options={'gtol':JAC_TOL})
+            # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
+            #                   fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
+        return result
+
+
+class KinematicCost:
+    def __init__(self, cost_func, jac_func):
+        self.cost_func = cost_func 
+        self.jac_func = jac_func
+
+    def get_cost(self, config):
+        #Takes a (N,) config and returns a scalar cost
+        return self.cost_func(config)
+
+    def get_jacobian(self, config):
+        #Takes a (N,) config and returns a (N,) gradient
+        return self.jac_func(config)
+
+class KinematicConstraint(KinematicCost):
+    def __init__(self, tree, type, frame, value):
+        #TODO: add orientation constraints
+        KinematicCost.__init__(self, self._constraint_cost, 
+                               self._constraint_jacobian)
+        self.tree = tree #The KinematicTree referenced by this constraint
+        self.type = type #Constraint type
+        self.frame = frame #Name of the constrained end effector frame
+        self.value = value #Desired value of the constrained frame (type depends on self.type)
+        #self.type=='position' -> self.value==Point, self.type=='orientation' -> self.value==Rotation
+        #Example types: 'position', 'orientation'
+
+    def _constraint_cost(self, config):
+        #Get the current value of the end effector transform
+        cur_trans = self.tree.get_transform(config, self.frame)
+
+        #Conmpute the value of the constraint depending on its type
+        if self.type is 'position':
+            diff = self.value.diff(cur_trans.position())
+            return diff.norm()**2
+        elif self.type is 'orientation':
+            raise NotImplementedError('Orientation constraints are not implemented')
+        else:
+            raise TypeError('Not a valid constraint type')
+
+    def _constraint_jacobian(self, config):
+        cur_trans = self.tree.get_transform(config, self.frame)
+        cur_jac = self.tree.get_jacobian(config, self.frame)
+
+        #Compute the velocity of the origin of the end effector frame,
+        #in spatial frame coordinates, for each joint in the manipulator
+        jac_hat = se3.hat(cur_jac) #4 x 4 x N ndarray
+        end_vel = np.zeros(jac_hat.shape)
+        for i in range(jac_hat.shape[2]):
+            end_vel[:,:,i] = jac_hat[:,:,i].dot(cur_trans.homog())
+        end_vel = se3.unhat(end_vel)
+
+        if self.type is 'position':
+            cost_jac = np.array(config)
+            cost_jac = 2 * cur_trans.position().x() - 2 * self.value.x()
+            return cost_jac.T.squeeze().dot(end_vel[3:,:])
+
+class QuadraticDisplacementCost(KinematicCost):
+    """Kinematic cost which penalizes movement away from a neutral pose.
+
+    The quadratic displacement cost is equal to the squared configuration space 
+    distance between the current kinematic configuration and a 
+    specified neutral configuration.
+
+    Args:
+    neutral_pos - (N,) ndarray: The neutral pose of the manipulator in c-space
+    """
+
+    def __init__(self, neutral_pos):
+        KinematicCost.__init__(self, self._cost, self._jacobian)
+        self.neutral_pos = neutral_pos
+
+    def _cost(self, config):
+        return la.norm(config - self.neutral_pos)**2
+
+    def _jacobian(self, config):
+        return 2 * config - 2 * self.neutral_pos
+
+class KinematicTree():
+    def __init__(self, root, end_pos):
+        self._root = root
+        self._named_frames = dict()
+        self._config = None
+        END_TRANSFORM = Transform(p=end_pos, R=np.identity(3)).homog()
+
+        #Add a named frame at each of the chain endpoints
+        for i, joint in enumerate(self._root.ends):
+            self.add_named_frame(joint.prnt, 'endpoint_' + str(i), g0=END_TRANSFORM)
+
+    def add_named_frame(self, joint, name, g0=Transform().homog()):
+        #Create a new transform and add a _parent_node attribute
+        new_frame = Transform(homog=g0)
+        new_frame._parent_node = joint
+
+        #Add to the dict of named transforms
+        self._named_frames[name] = new_frame
+
+    def get_named_frames(self):
+        return self._named_frames.keys()
+
+    def get_transform(self, config, name):
+        #Set the current kinematic configuration
+        self._set_config(config)
+
+        #Compute the transform
+        frame = self._named_frames[name]
+        g_st = Transform(homog=frame._parent_node.pox)
+        g_st = g_st.dot(frame)
+        return g_st
+
+    def get_jacobian(self, config, name):
+        #Returns the spatial frame Jacobian for the manipulator
+        self._set_config(config)
+        frame = self._named_frames[name]
+        return np.hstack([j.dpox[1] for j in frame._parent_node.chain()])
+        return frame._parent_node.dpox[1]
+
+    def _set_config(self, config):
+        #Only recompute transforms if the configuration has changed
+        if self._config is None or not np.allclose(self._config, config):
+            #Set the new configuration
+            self._config = config
+            self._root.angles(config)
+
+            #Compute the transforms and Jacobians at each joint
+            self._root.pox()
+            self._root.dpox()
+
+def main():
+    j1 = Joint()
+    j2 = Joint()
+    j3 = Joint()
+
+    1/0
+    j2.twist = Twist(omega=[1,0.0,0], nu=[1,2,0.0])
+    j3.twist = Twist(omega=[0,1.0,0], nu=[1,4,0.0])
+
+    ft1 = Transform()
+    ft2 = Transform()
+
+    j1.children['joint2'] = j2
+    j2.parent = j1
+    j1.children['joint3'] = j3
+    j3.parent = j1
+
+    string = j1.json()
+
+    # #Create a new Skel object with the correct params
+    # skel = Skel()
+
+    # #Load a test BVH file into the skeleton
+    # skel.read(FILENAME, vars=VARS)
+    # kin_tree = KinematicTree(skel)
+
+    # #Make an end effector position constraint
+    # constraint1 = KinematicConstraint(kin_tree, 'position', 'endpoint_0', Point(x=np.array([0,3,0.5])[:,None]))
+    
+    # #Make a pose cost function
+    # constraint2 = QuadraticDisplacementCost(np.array([0,0,.5,0.5]))
+
+    # #Test the optimization
+    # ik_sol = IKSolver(kin_tree, constraints=[constraint1], 
+    #                   costs=[constraint2])
+    # result = ik_sol.solve_ik(np.array([.2,.2,0,0.0]))
+    # print(result)
+    1/0
+
+if __name__ == '__main__':
+    main()
