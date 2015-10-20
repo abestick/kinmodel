@@ -179,24 +179,6 @@ class PhasespaceStream(MocapSource):
         Once the end of the file/stream is reached, calls to read() will return 
         None.
         """
-        # #Initialize an array to hold the data if length > 0
-        # if length > 1:
-
-        #     read_data = np.empty((self._num_points, 3, length))
-        #     read_data[:] = np.nan
-
-        # #Read the data
-        # for i in range(length):
-        #     raw_data = OWL.owlGetMarkers()
-        #     for marker in raw_data:
-        #         if marker.cond > 0:
-        #             read_data[marker.id,0,i] = marker.x
-        #             read_data[marker.id,1,i] = marker.y
-        #             read_data[marker.id,2,i] = marker.z
-
-        #     if OWL.owlGetError() != OWL.OWL_NO_ERROR:
-        #         raise RuntimeError('An error occurred while reading data from the server')
-        # return read_data
         frames = []
         timestamps = []
         for i in range(length):
@@ -455,9 +437,6 @@ class MocapIterator():
         
         #Define fields
         self.mocap_obj = mocap_obj
-        # self.mocap_data = mocap_obj.get_frames()
-        # self.mocap_time = mocap_obj.get_timestamps()
-        # self.current_frame = 0
     
     def __iter__(self):
         return self
@@ -468,13 +447,6 @@ class MocapIterator():
             return value
         else:
             raise StopIteration()
-    
-    # def next(self):
-    #     if self.current_frame >= self.mocap_data.shape[2]:
-    #         raise StopIteration()
-    #     else:
-    #         self.current_frame = self.current_frame + 1
-    #         return self.mocap_data[:,:,self.current_frame-1], self.mocap_time[self.current_frame-1]
 
 class _RingBuffer():
     def __init__(self, size):
@@ -511,7 +483,6 @@ def find_homog_trans(points_a, points_b, err_threshold=0, rot_0=None):
     between the transformed points and the corresponding points in 
     points_b. Both points_a and points_b are (n, 3) arrays.
     """
-    #OLD ALGORITHM ----------------------
     #Align the centroids of the two point clouds
     cent_a = sp.average(points_a, axis=0)
     cent_b = sp.average(points_b, axis=0)
@@ -536,37 +507,7 @@ def find_homog_trans(points_a, points_b, err_threshold=0, rot_0=None):
     homog_3[0:3,3] = cent_b
     homog = sp.dot(homog_3, sp.dot(homog_2, homog_1))
     return homog, rot
-    #---------------------------------------
 
-
-    # #Define the error function
-    # def error(state):
-    #     rot = state[0:3]
-    #     trans = state[3:6]
-
-    #     #Construct a homography matrix
-    #     homog = np.eye(4)
-    #     homog[0:3,3] = trans
-    #     homog[0:3,0:3] = vec_to_rot(rot)
-
-    #     #Transform points_a
-    #     points_a_h = np.hstack((points_a, np.ones((points_a.shape[0],1))))
-    #     trans_points_a = homog.dot(points_a_h.T).T[:,0:3]
-
-    #     #Compute the error
-    #     err = la.norm(points_a - trans_points_a, axis=1)**2
-    #     return err
-    
-    # #Run the optimization
-    # if rot_0 == None:
-    #     rot_0 = sp.zeros(6)
-    # rot = opt.leastsq(error, rot_0, ftol=1e-20)[0]
-    
-    # #Compute the final homogeneous transformation matrix
-    # homog = np.eye(4)
-    # homog[0:3,3] = rot[3:6]
-    # homog[0:3,0:3] = vec_to_rot(rot[0:3])
-    # return homog, rot
 
 def vec_to_rot(x):
     #Make a 3x3 skew-symmetric matrix
