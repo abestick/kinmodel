@@ -21,9 +21,6 @@ import matplotlib.pyplot as plt
 import scipy.optimize as opt
 import math
 import sys
-import os
-#import OWL
-from collections import deque
 from Queue import Queue
 from threading import Thread, RLock
 import time
@@ -75,6 +72,20 @@ class MocapSource():
     @abstractmethod
     def set_coordinates(self, markers, new_coords, mode='constant'):
         pass
+
+    def read_dict(self, name_dict, block=True):
+        """Returns a dict mapping marker names to numpy arrays of 
+        marker coordinates. Argument name_dict is a dict mapping marker
+        names to marker indices in this particular dataset
+        """
+        data_array = self.read(length=1, block=block)
+        if data_array is None:
+            return None
+        output_dict = {}
+        for marker_name in name_dict:
+            data_point = data_array[name_dict[marker_name],:,0]
+            output_dict[marker_name] = data_point
+        return output_dict
 
     def __iter__(self):
         return MocapIterator(self)
@@ -277,8 +288,8 @@ class MocapFile(MocapSource):
             length = file_len - self._read_pointer
 
         #Read the frames and timestamps
-        frames = self.get_frames()[:,:,self._read_pointer:self._read_pointer+length+1]
-        timestamps = self.get_timestamps()[self._read_pointer:self._read_pointer+length+1]
+        frames = self.get_frames()[:,:,self._read_pointer:self._read_pointer+length]
+        timestamps = self.get_timestamps()[self._read_pointer:self._read_pointer+length]
 
         #Increment the read pointer
         self._read_pointer = self._read_pointer + length
