@@ -78,14 +78,16 @@ class MocapSource():
         marker coordinates. Argument name_dict is a dict mapping marker
         names to marker indices in this particular dataset
         """
-        data_array = self.read(length=1, block=block)
+        data = self.read(length=1, block=block)
+        data_array = data[0]
+        timestamp = data[1][0]
         if data_array is None:
             return None
         output_dict = {}
         for marker_name in name_dict:
             data_point = data_array[name_dict[marker_name],:,0]
             output_dict[marker_name] = data_point
-        return output_dict
+        return output_dict, timestamp
 
     def __iter__(self):
         return MocapIterator(self)

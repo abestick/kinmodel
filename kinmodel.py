@@ -461,7 +461,7 @@ class KinematicTree():
     def get_transform(self, config, name):
         #Set the current kinematic configuration
         self._set_config(config)
-
+ 
         #Compute the transform
         frame = self._named_frames[name]
         g_st = Transform(homog=frame._parent_node.pox)
