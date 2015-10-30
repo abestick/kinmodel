@@ -25,6 +25,13 @@ from Queue import Queue
 from threading import Thread, RLock
 import time
 
+#OWL is only needed by PhasespaceStream
+try:
+    import OWL
+except(ImportError):
+    pass
+
+
 class MocapSource():
     __metaclass__=ABCMeta
 
@@ -101,7 +108,6 @@ class MocapSource():
 
 class PhasespaceStream(MocapSource):
     def __init__(self, ip_address, num_points, framerate=None, buffer_length=2):
-        import OWL
         self._num_points = num_points
         self._shutdown_flag = False
         self._start_time = 0
