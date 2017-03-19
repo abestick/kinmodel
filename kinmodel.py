@@ -1,9 +1,10 @@
 from abc import ABCMeta, abstractmethod
 #from new_skel import Skel
+from collections import OrderedDict
 import numpy as np
 import numpy.linalg as la
 import scipy.optimize as opt
-#import se3
+import se3
 from math import pi, log10
 import json
 
@@ -12,7 +13,7 @@ VARS = {'l_0':0.5, 'l_1':2.0, 'l_2':1.0}
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
-def new_GeometricPrimitive(input_data):
+def new_geometric_primitive(input_data):
     homog_array = None
     #If the input is a GeometricPrimitive
     try:
@@ -57,7 +58,33 @@ class GeometricPrimitive():
             raise TypeError("Dimension mismatch - can't compose primitives in this order")
 
         homog_result = homog1.dot(homog2)
-        return new_GeometricPrimitive(homog_result)
+        return new_geometric_primitive(homog_result)
+
+    def _json(self):
+        return self.homog().squeeze().tolist()
+
+class Feature:
+    """ j = Feature(...) a feature in a kinematic tree
+
+        .name - the name of the feature (must be unique in this tree)
+        .primitive - the geometric primitive of this feature (wrt the base coordinate frame)
+    """
+    def __init__(self, name, primitive):
+        self.name = name
+        if hasattr(primitive, 'homog'):
+            self.primitive = primitive
+        else:
+            self.primitive = list_to_primitive(primitive)
+
+    def _json(self):
+        OUTPUT_ATTRIBS = ['name', 'primitive']
+        json_dict = OrderedDict()
+        for attrib in OUTPUT_ATTRIBS:
+            try:
+                json_dict[attrib] = getattr(self, attrib)
+            except AttributeError:
+                pass
+        return json_dict
 
 
 class Joint:
@@ -65,36 +92,37 @@ class Joint:
 
         .json(filename) - saves the kinematic tree to the specified file
 
+        .name - the name of this joint (must be unique in this tree)
         .children - list of other Joint objects
-        .features - features attached to the output of this joint (Transforms)
-        .frames - fixed frames attached to the output of this joint (Transforms)
-        .parent - the parent Joint (only present if not the root)
         .twist - the twist coordinates of the joint (only present if not the root)
     """
-    def __init__(self, name=None, children={}, features={},
-                 frames={}, parent=None, twist=None):
-        
+    def __init__(self, name, children=None, twist=None):
+        self.name = name
+        if children is not None:
+            children = children
+        else:
+            children = []
         self.children = children #Children of the joint (other Joints)
-        self.features = features #Features attached to the joint's output (Transforms)
-        #self.frames = frames #Fixed frames attached to the joint's output (Transforms)
-
-        if parent is not None:
-            self.parent = parent
+        if hasattr(twist, '_xi'):
             self.twist = twist
+        else:
+            self.twist = list_to_primitive(twist)
 
-    def json(self, filename=None):
+    def json(self, filename=None, args={}):
         if filename is None:
-            return json.dumps(self, default=lambda o: o._json())
+                return json.dumps(self, default=lambda o: o._json(), **args)
         else:
             with open(filename) as output_file:
-                json.dump(self, output_file, default=lambda o: o._json())
+                json.dump(self, output_file, default=lambda o: o._json(), **args)
 
     def _json(self):
-        ATTRIBS = ['twist', 'features', 'children']
-        json_dict = {}
-        for attrib in ATTRIBS:
-            if hasattr(self, attrib):
+        OUTPUT_ATTRIBS = ['name', 'twist', 'children']
+        json_dict = OrderedDict()
+        for attrib in OUTPUT_ATTRIBS:
+            try:
                 json_dict[attrib] = getattr(self, attrib)
+            except AttributeError:
+                pass
         return json_dict
 
 class Transform(GeometricPrimitive):
@@ -131,54 +159,51 @@ class Transform(GeometricPrimitive):
     def R(self):
         return self._H[0:3,0:3]
 
-    # def adjoint(self):
-    #     adj = np.zeros((6,6))
-    #     adj[:3,:3] = self.R
-    #     adj[3:,3:] = self.R
-    #     adj[3:,:3] = se3.skew(self.p).dot(self.R)
-    #     return adj
-
-    # def _json(self):
-    #     return self.homog().tolist()
+    def adjoint(self):
+        adj = np.zeros((6,6))
+        adj[:3,:3] = self.R
+        adj[3:,3:] = self.R
+        adj[3:,:3] = se3.skew(self.p).dot(self.R)
+        return adj
 
 
-# class Twist:
-#     """ xi = Twist(...)  element of se(3)
+class Twist:
+    """ xi = Twist(...)  element of se(3)
 
-#         .xi() - 6 x 1 - twist coordinates ndarray (om, v)
-#         .omega() - 3 x 1 - rotation axis ndarray
-#         .nu() - 3 x 1 - translation direction ndarray
-#         .exp(theta) - Transform object
+        .xi() - 6 x 1 - twist coordinates ndarray (om, v)
+        .omega() - 3 x 1 - rotation axis ndarray
+        .nu() - 3 x 1 - translation direction ndarray
+        .exp(theta) - Transform object
 
-#         ._xi - 6 x 1 - twist coordinates (om, v)
-#     """
-#     def __init__(self, omega=None, nu=None, copy=None):
-#         if copy is not None:
-#             self._xi = copy.xi().copy()
-#         elif omega is not None and nu is not None:
-#             omega = np.asarray(omega)
-#             nu = np.asarray(nu)
-#             omega = np.reshape(omega, (3,1))
-#             nu = np.reshape(nu, (3,1))
-#             assert omega.shape == (3,1) and nu.shape == (3,1)
-#             self._xi = np.vstack((omega, nu))
-#         else:
-#             raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
+        ._xi - 6 x 1 - twist coordinates (om, v)
+    """
+    def __init__(self, omega=None, nu=None, copy=None):
+        if copy is not None:
+            self._xi = copy.xi().copy()
+        elif omega is not None and nu is not None:
+            omega = np.asarray(omega)
+            nu = np.asarray(nu)
+            omega = np.reshape(omega, (3,1))
+            nu = np.reshape(nu, (3,1))
+            assert omega.shape == (3,1) and nu.shape == (3,1)
+            self._xi = np.vstack((omega, nu))
+        else:
+            raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
 
-#     def xi(self):
-#         return _xi
+    def xi(self):
+        return _xi
 
-#     def omega(self):
-#         return _xi[:3,:]
+    def omega(self):
+        return _xi[:3,:]
 
-#     def nu(self):
-#         return _xi[3:,:]
+    def nu(self):
+        return _xi[3:,:]
 
-#     def exp(self, theta):
-#         return Transform(homog=se3.expse3(self._xi, theta))
+    def exp(self, theta):
+        return Transform(homog=se3.expse3(self._xi, theta))
 
-#     def _json(self):
-#         return self._xi.squeeze().tolist()
+    def _json(self):
+        return self._xi.squeeze().tolist()
 
 class Rotation(GeometricPrimitive):
     """ R = Rotation(...)  element of SO(3)
@@ -198,16 +223,10 @@ class Rotation(GeometricPrimitive):
         return self._R
 
     def homog(self):
-        homog_matrix = np.identity(4)
+        homog_matrix = np.zeros(4)
         homog_matrix[0:3,0:3] = self._R
         return homog_matrix
 
-    # def _json(self):
-    #     return self.matrix().tolist()
-
-    # def __repr__(self):
-    #     repr = '%s' % (self._R)
-    #     return repr
 
 class Vector(GeometricPrimitive):
     """ x = Vector(...)  translation in R^3
@@ -232,8 +251,6 @@ class Vector(GeometricPrimitive):
     def norm(self):
         return la.norm(self.q())
 
-    # def _json(self):
-    #     return self.homog().squeeze().tolist()
 
 class Point(GeometricPrimitive):
     """ x = Point(...)  point in R^3
@@ -262,8 +279,6 @@ class Point(GeometricPrimitive):
     def norm(self):
         return la.norm(self.q())
 
-    # def _json(self):
-    #     return self.homog().squeeze().tolist()
 
 def list_to_primitive(orig_obj):
     try:
@@ -284,8 +299,10 @@ def list_to_primitive(orig_obj):
     return orig_obj
 
 def obj_to_joint(orig_obj):
-    if hasattr(orig_obj, 'children') and hasattr(orig_obj, 'frames') and hasattr(orig_obj, 'features'):
+    if 'children' in orig_obj:
         return Joint(**orig_obj)
+    elif 'primitive' in orig_obj:
+        return Feature(**orig_obj)
     else:
         return orig_obj
 
@@ -437,26 +454,12 @@ class QuadraticDisplacementCost(KinematicCost):
         return 2 * config - 2 * self.neutral_pos
 
 class KinematicTree():
-    def __init__(self, root, end_pos):
+    def __init__(self, root):
         self._root = root
-        self._named_frames = dict()
         self._config = None
-        END_TRANSFORM = Transform(p=end_pos, R=np.identity(3)).homog()
 
-        #Add a named frame at each of the chain endpoints
-        for i, joint in enumerate(self._root.ends):
-            self.add_named_frame(joint.prnt, 'endpoint_' + str(i), g0=END_TRANSFORM)
-
-    def add_named_frame(self, joint, name, g0=Transform().homog()):
-        #Create a new transform and add a _parent_node attribute
-        new_frame = Transform(homog=g0)
-        new_frame._parent_node = joint
-
-        #Add to the dict of named transforms
-        self._named_frames[name] = new_frame
-
-    def get_named_frames(self):
-        return self._named_frames.keys()
+    def json(self, filename=None):
+        return self._root.json(filename, args={'separators':(',',': '), 'indent':4})
 
     def get_transform(self, config, name):
         #Set the current kinematic configuration
@@ -487,23 +490,26 @@ class KinematicTree():
             self._root.dpox()
 
 def main():
-    j1 = Joint()
-    j2 = Joint()
-    j3 = Joint()
+    j1 = Joint('joint1')
+    j2 = Joint('joint2')
+    j3 = Joint('joint3')
 
-    1/0
     j2.twist = Twist(omega=[1,0.0,0], nu=[1,2,0.0])
     j3.twist = Twist(omega=[0,1.0,0], nu=[1,4,0.0])
 
-    ft1 = Transform()
-    ft2 = Transform()
+    ft1 = Feature('feat1', Transform())
+    ft2 = Feature('feat2', Transform())
 
-    j1.children['joint2'] = j2
-    j2.parent = j1
-    j1.children['joint3'] = j3
-    j3.parent = j1
+    j1.children.append(j2)
+    j1.children.append(j3)
+    j2.children.append(ft1)
+    j3.children.append(ft2)
 
-    string = j1.json()
+    tree = KinematicTree(j1)
+
+    string = tree.json()
+
+    test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
 
     # #Create a new Skel object with the correct params
     # skel = Skel()
