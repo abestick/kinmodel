@@ -200,7 +200,7 @@ class Twist:
         return _xi[3:,:]
 
     def exp(self, theta):
-        return Transform(homog=se3.expse3(self._xi, theta))
+        return Transform(homog_array=se3.expse3(self._xi, theta))
 
     def _json(self):
         return self._xi.squeeze().tolist()
@@ -471,23 +471,115 @@ class KinematicTree():
         g_st = g_st.dot(frame)
         return g_st
 
-    def get_jacobian(self, config, name):
-        #Returns the spatial frame Jacobian for the manipulator
-        self._set_config(config)
-        frame = self._named_frames[name]
-        return np.hstack([j.dpox[1] for j in frame._parent_node.chain()])
-        return frame._parent_node.dpox[1]
+    # def get_jacobian(self, config, name):
+    #     #Returns the spatial frame Jacobian for the manipulator
+    #     self._set_config(config)
+    #     frame = self._named_frames[name]
+    #     return np.hstack([j.dpox[1] for j in frame._parent_node.chain()])
+    #     return frame._parent_node.dpox[1]
 
-    def _set_config(self, config):
-        #Only recompute transforms if the configuration has changed
-        if self._config is None or not np.allclose(self._config, config):
-            #Set the new configuration
-            self._config = config
-            self._root.angles(config)
+    def set_config(self, config, root=None):
+        if root is None:
+            root = self._root
+        if hasattr(root, 'children'):
+            try:
+                root._theta = config[root.name]
+            except KeyError:
+                if root.twist is not None:
+                    raise ValueError('Config dict is missing an entry for joint: ' + root.name)
+            for child_joint in root.children:
+                self.set_config(config, root=child_joint)
 
-            #Compute the transforms and Jacobians at each joint
-            self._root.pox()
-            self._root.dpox()
+    def get_config(self, root=None, config=None):
+        if root is None:
+            root = self._root
+        if config is None:
+            config = {}
+        try:
+            config[root.name] = root._theta
+        except AttributeError:
+            pass
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.get_config(root=child, config=config)
+        return config
+
+    def compute_pox(self, root=None, parent_pox=None):
+        if root is None:
+            root = self._root
+        if parent_pox is None:
+            parent_pox = Transform()
+        try:
+            root._pox = parent_pox * root.twist.exp(root._theta)
+        except AttributeError:
+            # Root doesn't have a twist (joint is stationary), just copy the parent pox
+            root._pox = new_geometric_primitive(parent_pox)
+        if hasattr(root, 'children'):
+            for child_joint in root.children:
+                self.compute_pox(root=child_joint, parent_pox=root._pox)
+
+    def observe_features(self, root=None, observations=None):
+        if root is None:
+            root = self._root
+        if observations is None:
+            observations = {}
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.observe_features(root=child, observations=observations)
+        else:
+            # This is a feature
+            observations[root.name] = root._pox * root.primitive
+        return observations
+
+    def set_twists(self, twists, root=None):
+        if root is None:
+            root = self._root
+        try:
+            root.twist = twists[root.name]
+        except KeyError:
+            pass
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.set_twists(twists, root=child)
+
+    def set_features(self, features, root=None):
+        if root is None:
+            root = self._root
+        try:
+            root.primitive = features[root.name]
+        except KeyError:
+            pass
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.set_features(features, root=child)
+
+    def get_twists(self, root=None, twists=None):
+        if root is None:
+            root = self._root
+        if twists is None:
+            twists = {}
+        try:
+            twists[root.name] = root.twist
+        except AttributeError:
+            pass
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.get_twists(root=child, twists=twists)
+        return twists
+
+    def get_features(self, root=None, features=None):
+        if root is None:
+            root = self._root
+        if features is None:
+            features = {}
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.get_features(root=child, features=features)
+        else:
+            # This is a feature
+            features[root.name] = root.primitive
+        return features
+        
 
 def main():
     j1 = Joint('joint1')
@@ -510,6 +602,9 @@ def main():
     string = tree.json()
 
     test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
+
+    tree.set_config({'joint2':0.0, 'joint3':0.0})
+    tree.compute_pox()
 
     # #Create a new Skel object with the correct params
     # skel = Skel()
