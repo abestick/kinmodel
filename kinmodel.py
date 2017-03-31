@@ -8,9 +8,6 @@ import se3
 from math import pi, log10, sqrt
 import json
 
-FILENAME = '../data/scara.bvh'
-VARS = {'l_0':0.5, 'l_1':2.0, 'l_2':1.0}
-
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
 def new_geometric_primitive(input_data):
@@ -38,7 +35,7 @@ def new_geometric_primitive(input_data):
 
 
 #Geometric primitives
-class GeometricPrimitive():
+class GeometricPrimitive(object):
     __metaclass__ = ABCMeta
 
     @abstractmethod
@@ -63,7 +60,7 @@ class GeometricPrimitive():
     def _json(self):
         return self.homog().squeeze().tolist()
 
-class Feature:
+class Feature(object):
     """ j = Feature(...) a feature in a kinematic tree
 
         .name - the name of the feature (must be unique in this tree)
@@ -87,7 +84,7 @@ class Feature:
         return json_dict
 
 
-class Joint:
+class Joint(object):
     """ j = Joint(...) a joint in a kinematic tree
 
         .json(filename) - saves the kinematic tree to the specified file
@@ -167,7 +164,7 @@ class Transform(GeometricPrimitive):
         return adj
 
 
-class Twist:
+class Twist(object):
     """ xi = Twist(...)  element of se(3)
 
         .xi() - 6 x 1 - twist coordinates ndarray (om, v)
@@ -188,7 +185,7 @@ class Twist:
             assert omega.shape == (3,1) and nu.shape == (3,1)
             self._xi = np.vstack((omega, nu))
         elif vectorized is not None:
-        	self._xi = np.asarray(vectorized)
+            self._xi = np.asarray(vectorized)
         else:
             raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
 
@@ -205,7 +202,7 @@ class Twist:
         return Transform(homog_array=se3.expse3(self._xi, theta))
 
     def vectorize(self):
-    	return np.array(self._xi)
+        return np.array(self._xi).squeeze()
 
     def _json(self):
         return self._xi.squeeze().tolist()
@@ -265,7 +262,7 @@ class Point(GeometricPrimitive):
     """
     def __init__(self, homog_array=None, vectorized=None):
         if vectorized is not None:
-        	self._H = np.concatenate((vectorized, np.ones((1,))))
+            self._H = np.concatenate((vectorized, np.ones((1,))))
         elif homog_array is None:
             self._H = np.zeros(4)
             self._H[3] = 1
@@ -281,13 +278,16 @@ class Point(GeometricPrimitive):
         return self._H
 
     def error(self, other):
-    	return la.norm(self.q() - other.q())
+        return la.norm(self.q() - other.q())
 
     # def diff(self, x):
     #     return Vector(x=self.q() - x.q())
 
     def norm(self):
         return la.norm(self.q())
+
+    def vectorize(self):
+        return self._H[:3]
 
 
 def list_to_primitive(orig_obj):
@@ -319,7 +319,7 @@ def obj_to_joint(orig_obj):
     # else:
     #     raise TypeError('The list could not be converted to a geometric primitive')
 
-class IKSolver:
+class IKSolver(object):
     """Contains the kinematic tree, cost functions, and constraints associated
     with a given inverse kinematics problem.
 
@@ -387,7 +387,7 @@ class IKSolver:
         return result
 
 
-class KinematicCost:
+class KinematicCost(object):
     def __init__(self, cost_func, jac_func):
         self.cost_func = cost_func 
         self.jac_func = jac_func
@@ -463,7 +463,7 @@ class QuadraticDisplacementCost(KinematicCost):
     def _jacobian(self, config):
         return 2 * config - 2 * self.neutral_pos
 
-class KinematicTree():
+class KinematicTree(object):
     def __init__(self, root):
         self._root = root
         self._config = None
@@ -514,7 +514,7 @@ class KinematicTree():
                 self.get_config(root=child, config=config)
         return config
 
-    def compute_pox(self, root=None, parent_pox=None):
+    def _compute_pox(self, root=None, parent_pox=None):
         if root is None:
             root = self._root
         if parent_pox is None:
@@ -526,7 +526,7 @@ class KinematicTree():
             root._pox = new_geometric_primitive(parent_pox)
         if hasattr(root, 'children'):
             for child_joint in root.children:
-                self.compute_pox(root=child_joint, parent_pox=root._pox)
+                self._compute_pox(root=child_joint, parent_pox=root._pox)
 
     def observe_features(self, root=None, observations=None):
         if root is None:
@@ -591,31 +591,164 @@ class KinematicTree():
         return features
 
     def compute_error(self, config_dict, feature_obs_dict):
-    	# Set configuration and compute pox, assuming config_dict maps joint names to float values
-    	self.set_config(config_dict)
-    	self.compute_pox()
+        # Set configuration and compute pox, assuming config_dict maps joint names to float values
+        self.set_config(config_dict)
+        self._compute_pox()
 
-    	# Assuming feature_obs_dict maps feature names to geometric primitive objects, compute the
-    	# error between each feature and its actual value (add an .error(other) method to primitives)
-    	feature_obs = self.observe_features()
-    	sum_squared_errors = 0
-    	for feature in feature_obs:
-    		sum_squared_errors += feature_obs[feature].error(feature_obs_dict[feature]) ** 2
+        # Assuming feature_obs_dict maps feature names to geometric primitive objects, compute the
+        # error between each feature and its actual value (add an .error(other) method to primitives)
+        feature_obs = self.observe_features()
+        sum_squared_errors = 0
+        for feature in feature_obs:
+            sum_squared_errors += feature_obs[feature].error(feature_obs_dict[feature]) ** 2
 
-    	# Compute and return the euclidean sum of the error values for each feature
-    	return sum_squared_errors
+        # Compute and return the euclidean sum of the error values for each feature
+        return sum_squared_errors
 
-	def compute_sequence_error(self, config_dict_list, feature_obs_dict_list):
-		# Interface is the same, except that configs and feature obs are lists of dicts
-		if len(config_dict_list) != len(feature_obs_dict_list):
-			raise ValueError('Lists of configs and feature obs must be the same length')
+    def compute_sequence_error(self, config_dict_list, feature_obs_dict_list):
+        # Interface is the same, except that configs and feature obs are lists of dicts
+        if len(config_dict_list) != len(feature_obs_dict_list):
+            raise ValueError('Lists of configs and feature obs must be the same length')
 
-		# Compute error for each config using compute_error, then add up
-		sum_squared_errors = 0
-		for config, feature_obs in zip(config_dict_list, feature_obs_dict_list):
-			sum_squared_errors += self.compute_error(config, feature_obs)
-		return sum_squared_errors
+        # Compute error for each config using compute_error, then add up
+        sum_squared_errors = 0
+        for config, feature_obs in zip(config_dict_list, feature_obs_dict_list):
+            sum_squared_errors += self.compute_error(config, feature_obs)
+        return sum_squared_errors
+
+    def get_objective_function(self, feature_obs_dict_list, **args):
+        return KinematicTreeObjectiveFunction(self, feature_obs_dict_list, **args)
+        # Return a KinematicTreeObjectiveFunction object which supports
+        # - Compute error for a vector of parameters
+        # - Convert a vector of parameters back to dicts of parameter values
+        # - Get the initial values of the parameters as a vector and save the order/type of them
         
+class KinematicTreeObjectiveFunction(object):
+    def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
+            optimize={'configs':True, 'twists':True, 'features':True}):
+        self._tree = kinematic_tree
+        self._feature_obs = feature_obs_dict_list
+        if config_dict_list is None:
+            twists = self._tree.get_twists()
+
+            # Don't optimize the config of immovable joints
+            zero_config = {name: 0.0 for name in twists if twists[name] is not None}
+            self._config_dict_list = [zero_config.copy() for config in feature_obs_dict_list]
+        else:
+            if len(config_dict_list) != len(feature_obs_dict_list):
+                raise ValueError('Must have same num of feature obs and config initial guesses')
+            self._config_dict_list = config_dict_list
+        self._last_vectorized_sequence = None
+        self._optimize = optimize
+
+    def get_current_param_vector(self):
+        # Pull params from KinematicTree and pass to vectorize
+        twists = self._tree.get_twists()
+        features = self._tree.get_features()
+
+        # Vectorize and return
+        return self.vectorize(self._config_dict_list, twists, features)
+
+    def error(self, vectorized_params):
+        # Unvectorize params
+        configs, twists, features = self.unvectorize(vectorized_params)
+        if configs is not None:
+            self._config_dict_list = configs
+
+        # Set features and twists on tree
+        if features is not None:
+            self._tree.set_features(features)
+        if twists is not None:
+            self._tree.set_twists(twists)
+
+        # Compute error
+        return self._tree.compute_sequence_error(self._config_dict_list, self._feature_obs)
+
+    def vectorize(self, configs, twists, features):
+        # configs - list of dicts of floats, first is taken as fixed and not included in vector
+        # twists - dict of Twist objects
+        # features - dict of GeometricPrimitive objects
+        self._last_vectorized_sequence = []
+        vector_list = []
+
+        # Save a list of (type ('config'/'feature'/'twist'), name or (num, name) for config, instance type, length) tuples
+
+        # Shouldn't touch the tree itself, should just operate on the params and save the order
+        # Take first config in list as fixed - don't include in vector
+
+        # Add configs
+        if self._optimize['configs']:
+            for i, config in enumerate(configs[1:]):
+                for joint_name in config:
+                    description_tuple = ('config', (i+1, joint_name), 'int', 1)
+                    self._last_vectorized_sequence.append(description_tuple)
+                    vector_list.append(config[joint_name])
+
+        # Add twists
+        if self._optimize['twists']:
+            for joint_name in twists:
+                if twists[joint_name] is not None:
+                    vec_value = twists[joint_name].vectorize()
+                    description_tuple = ('twist', joint_name, type(twists[joint_name]), len(vec_value))
+                    self._last_vectorized_sequence.append(description_tuple)
+                    vector_list.extend(vec_value)
+
+        # Add features
+        if self._optimize['features']:
+            for feature_name in features:
+                vec_value = features[feature_name].vectorize()
+                description_tuple = ('feature', feature_name, type(features[feature_name]),
+                        len(vec_value))
+                self._last_vectorized_sequence.append(description_tuple)
+                vector_list.extend(vec_value)
+
+        return np.array(vector_list)
+
+    def unvectorize(self, vectorized_params):
+        # Shouldn't touch the tree, should operate on params and the order saved by vectorize()
+        # Return config dict list, twists dict, features dict
+        vector_ind = 0
+        if self._optimize['configs']:
+            configs = [self._config_dict_list[0]]
+        else:
+            configs = None
+        if self._optimize['twists']:
+            twists = {}
+        else:
+            twists = None
+        if self._optimize['features']:
+            features = {}
+        else:
+            features = None
+
+        for desc_tuple in self._last_vectorized_sequence:
+            # Pull out the vector value and description tuple for this config/twist/feature
+            vec_value = vectorized_params[vector_ind:vector_ind+desc_tuple[3]]
+            vector_ind += desc_tuple[3]
+
+            # Reconstruct the original data structures
+            if desc_tuple[0] == 'config':
+                if self._optimize['configs']:
+                    theta = vec_value[0]
+                    config_idx = desc_tuple[1][0]
+                    name = desc_tuple[1][1]
+                    while len(configs) < config_idx + 1:
+                        configs.append({})
+                    configs[config_idx][name] = theta
+            elif desc_tuple[0] == 'twist':
+                if self._optimize['twists']:
+                    twist = desc_tuple[2](vectorized=vec_value)
+                    name = desc_tuple[1]
+                    twists[name] = twist
+            elif desc_tuple[0] == 'feature':
+                if self._optimize['features']:
+                    feature = desc_tuple[2](vectorized=vec_value)
+                    name = desc_tuple[1]
+                    features[name] = feature
+            else:
+                raise ValueError('Invalid vectorized type: ' + desc_tuple[0])
+        return configs, twists, features
+
 
 def main():
     j1 = Joint('joint1')
@@ -640,26 +773,13 @@ def main():
     test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
 
     tree.set_config({'joint2':0.0, 'joint3':0.0})
-    tree.compute_pox()
+    tree._compute_pox()
 
-    # #Create a new Skel object with the correct params
-    # skel = Skel()
+    opt = tree.get_objective_function([tree.observe_features(), tree.observe_features()], optimize={'configs':False, 'twists':False, 'features':True})
+    test = opt.get_current_param_vector()
+    opt.error(test)
 
-    # #Load a test BVH file into the skeleton
-    # skel.read(FILENAME, vars=VARS)
-    # kin_tree = KinematicTree(skel)
-
-    # #Make an end effector position constraint
-    # constraint1 = KinematicConstraint(kin_tree, 'position', 'endpoint_0', Point(x=np.array([0,3,0.5])[:,None]))
     
-    # #Make a pose cost function
-    # constraint2 = QuadraticDisplacementCost(np.array([0,0,.5,0.5]))
-
-    # #Test the optimization
-    # ik_sol = IKSolver(kin_tree, constraints=[constraint1], 
-    #                   costs=[constraint2])
-    # result = ik_sol.solve_ik(np.array([.2,.2,0,0.0]))
-    # print(result)
     1/0
 
 if __name__ == '__main__':
