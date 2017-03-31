@@ -5,7 +5,7 @@ import numpy as np
 import numpy.linalg as la
 import scipy.optimize as opt
 import se3
-from math import pi, log10
+from math import pi, log10, sqrt
 import json
 
 FILENAME = '../data/scara.bvh'
@@ -46,7 +46,7 @@ class GeometricPrimitive():
         pass
 
     def __repr__(self):
-        output = self.__class__.__name__ + ":\n" + str(self.homog())
+        output = self.__class__.__name__ + ": " + str(self.homog())
         return output
 
     def __mul__(self, other):
@@ -177,7 +177,7 @@ class Twist:
 
         ._xi - 6 x 1 - twist coordinates (om, v)
     """
-    def __init__(self, omega=None, nu=None, copy=None):
+    def __init__(self, omega=None, nu=None, copy=None, vectorized=None):
         if copy is not None:
             self._xi = copy.xi().copy()
         elif omega is not None and nu is not None:
@@ -187,6 +187,8 @@ class Twist:
             nu = np.reshape(nu, (3,1))
             assert omega.shape == (3,1) and nu.shape == (3,1)
             self._xi = np.vstack((omega, nu))
+        elif vectorized is not None:
+        	self._xi = np.asarray(vectorized)
         else:
             raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
 
@@ -201,6 +203,9 @@ class Twist:
 
     def exp(self, theta):
         return Transform(homog_array=se3.expse3(self._xi, theta))
+
+    def vectorize(self):
+    	return np.array(self._xi)
 
     def _json(self):
         return self._xi.squeeze().tolist()
@@ -258,8 +263,10 @@ class Point(GeometricPrimitive):
         .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
         .q() - (3,) - cartesian coordinates ndarray
     """
-    def __init__(self, homog_array=None):
-        if homog_array is None:
+    def __init__(self, homog_array=None, vectorized=None):
+        if vectorized is not None:
+        	self._H = np.concatenate((vectorized, np.ones((1,))))
+        elif homog_array is None:
             self._H = np.zeros(4)
             self._H[3] = 1
         else:
@@ -272,6 +279,9 @@ class Point(GeometricPrimitive):
 
     def homog(self):
         return self._H
+
+    def error(self, other):
+    	return la.norm(self.q() - other.q())
 
     # def diff(self, x):
     #     return Vector(x=self.q() - x.q())
@@ -579,6 +589,32 @@ class KinematicTree():
             # This is a feature
             features[root.name] = root.primitive
         return features
+
+    def compute_error(self, config_dict, feature_obs_dict):
+    	# Set configuration and compute pox, assuming config_dict maps joint names to float values
+    	self.set_config(config_dict)
+    	self.compute_pox()
+
+    	# Assuming feature_obs_dict maps feature names to geometric primitive objects, compute the
+    	# error between each feature and its actual value (add an .error(other) method to primitives)
+    	feature_obs = self.observe_features()
+    	sum_squared_errors = 0
+    	for feature in feature_obs:
+    		sum_squared_errors += feature_obs[feature].error(feature_obs_dict[feature]) ** 2
+
+    	# Compute and return the euclidean sum of the error values for each feature
+    	return sum_squared_errors
+
+	def compute_sequence_error(self, config_dict_list, feature_obs_dict_list):
+		# Interface is the same, except that configs and feature obs are lists of dicts
+		if len(config_dict_list) != len(feature_obs_dict_list):
+			raise ValueError('Lists of configs and feature obs must be the same length')
+
+		# Compute error for each config using compute_error, then add up
+		sum_squared_errors = 0
+		for config, feature_obs in zip(config_dict_list, feature_obs_dict_list):
+			sum_squared_errors += self.compute_error(config, feature_obs)
+		return sum_squared_errors
         
 
 def main():
@@ -589,8 +625,8 @@ def main():
     j2.twist = Twist(omega=[1,0.0,0], nu=[1,2,0.0])
     j3.twist = Twist(omega=[0,1.0,0], nu=[1,4,0.0])
 
-    ft1 = Feature('feat1', Transform())
-    ft2 = Feature('feat2', Transform())
+    ft1 = Feature('feat1', Point())
+    ft2 = Feature('feat2', Point())
 
     j1.children.append(j2)
     j1.children.append(j3)
