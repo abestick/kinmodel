@@ -3,10 +3,11 @@ from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
 import numpy as np
 import numpy.linalg as la
-import scipy.optimize as opt
+import scipy.optimize
 import se3
 from math import pi, log10, sqrt
 import json
+import random
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
@@ -189,14 +190,18 @@ class Twist(object):
         else:
             raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
 
+    def __repr__(self):
+        output = self.__class__.__name__ + ": " + str(self.xi().squeeze())
+        return output
+
     def xi(self):
-        return _xi
+        return self._xi
 
     def omega(self):
-        return _xi[:3,:]
+        return self._xi[:3,:]
 
     def nu(self):
-        return _xi[3:,:]
+        return self._xi[3:,:]
 
     def exp(self, theta):
         return Transform(homog_array=se3.expse3(self._xi, theta))
@@ -749,6 +754,27 @@ class KinematicTreeObjectiveFunction(object):
                 raise ValueError('Invalid vectorized type: ' + desc_tuple[0])
         return configs, twists, features
 
+def generate_synthetic_observations(tree, num_obs=100):
+    # Get all the movable joints in the tree
+    movable_joint_names = [name for name in tree.get_twists() if name is not None]
+
+    # Generate random combinations of joint angles and output to a list of dicts
+    configs = []
+    configs.append({name: 0.0 for name in movable_joint_names})
+    for i in range(num_obs - 1):
+        config = {}
+        for name in movable_joint_names:
+            config[name] = random.uniform(-3.14, 3.14)
+        configs.append(config)
+
+    # Observe features for each config and make a list of feature obs dicts
+    feature_obs_dict_list = []
+    for config in configs:
+        tree.set_config(config)
+        tree._compute_pox()
+        feature_obs_dict_list.append(tree.observe_features())
+    return configs, feature_obs_dict_list
+
 
 def main():
     j1 = Joint('joint1')
@@ -775,9 +801,13 @@ def main():
     tree.set_config({'joint2':0.0, 'joint3':0.0})
     tree._compute_pox()
 
-    opt = tree.get_objective_function([tree.observe_features(), tree.observe_features()], optimize={'configs':False, 'twists':False, 'features':True})
+    configs, feature_obs = generate_synthetic_observations(tree)
+
+    opt = tree.get_objective_function(feature_obs, optimize={'configs':True, 'twists':True, 'features':True})
     test = opt.get_current_param_vector()
     opt.error(test)
+
+    result = scipy.optimize.minimize(opt.error, test)
 
     
     1/0
