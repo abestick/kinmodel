@@ -469,8 +469,15 @@ class QuadraticDisplacementCost(KinematicCost):
         return 2 * config - 2 * self.neutral_pos
 
 class KinematicTree(object):
-    def __init__(self, root):
-        self._root = root
+    # Specify only one of the three sources to load the tree from
+    def __init__(self, root=None, json_string=None, json_filename=None):
+        if root is not None:
+            self._root = root
+        elif json_string is not None:
+            self._root = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
+        elif json_filename is not None:
+            with open(json_filename) as json_file:
+                self._root = json.load(json_file, object_hook=obj_to_joint, encoding='utf-8')
         self._config = None
 
     def json(self, filename=None):
@@ -594,6 +601,17 @@ class KinematicTree(object):
             # This is a feature
             features[root.name] = root.primitive
         return features
+
+    def get_joints(self, root=None, joints=None):
+        if root is None:
+            root = self._root
+        if joints is None:
+            joints = {}
+        joints[root.name] = root
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.get_joints(root=child, joints=joints)
+        return joints
 
     def compute_error(self, config_dict, feature_obs_dict):
         # Set configuration and compute pox, assuming config_dict maps joint names to float values
