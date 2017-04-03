@@ -50,45 +50,31 @@ class MarkerAssignments():
         self._highlighted_markers = marker_nums
 
     def highlight_group(self, group_name):
-        if group_name in self._assignments:
-            marker_nums = self._assignments[group_name]
-            self.highlight_markers(marker_nums)
-        else:
-            self.highlight_markers([])
+        marker_nums = []
+        joint = self._tree.get_joints()[group_name]
+        for child in joint.children:
+            if not hasattr(child, 'children'):
+                marker_nums.append(int(child.name.split('_')[1]))
+        self._highlighted_markers = marker_nums
 
-    def assign_marker(self, marker_num, group):
-        self.unassign_marker(marker_num)
-        if group in self._assignments:
-            self._assignments[group].append(marker_num)
-        else:
-            self._assignments[group] = [marker_num]
-
-    def unassign_marker(self, marker_num):
-        keys = self._assignments.keys()
-        for key in keys:
-            if marker_num in self._assignments[key]:
-                #Remove the marker from any groups it occurs in
-                self._assignments[key].remove(marker_num)
-            if not self._assignments[key]:
-                #Delete the group if it has no markers left
-                self._assignments.pop(key, None)
+    def assign_marker(self, marker_num, joint_name, name_prefix='mocap_'):
+        joints = self._tree.get_joints()
+        primitive = kinmodel.new_geometric_primitive([0.0,0.0,0.0,1.0])
+        feature = kinmodel.Feature(name_prefix + str(marker_num), primitive)
+        joints[joint_name].children.append(feature)
 
     def get_last_frame(self):
         return self._last_frame
-
-    def get_assignments(self):
-        return self._assignments
-
-    def get_assignments_json(self):
-        return json.dumps(self._assignments, sort_keys=True, indent=4)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('input_kinmodel_file', help='The input kinematic model')
     parser.add_argument('output_kinmodel_file', help='The output kinematic model')
-    parser.add_argument('mocap_file', help='The .npz file with the mocap sequence')
+    # parser.add_argument('mocap_file', help='The .npz file with the mocap sequence')
     args = parser.parse_args()
+                           
+
 
     # Load the kinematic tree, list all joints, and delete existing markers
     kin_tree = kinmodel.KinematicTree(json_filename=args.input_kinmodel_file)
@@ -99,25 +85,25 @@ def main():
                 # This is a feature - delete it
                 tree_joints[joint].children.remove(child)
 
-    # Load the mocap file
-    mocap_file = np.load(args.mocap_file)
-    mocap_array = mocap_file['mocap']
+    # # Load the mocap file
+    # mocap_file = np.load(args.mocap_file)
+    # mocap_array = mocap_file['mocap']
 
-    # List all markers seen at least once
-    markers_seen = np.where(np.any(np.logical_not(np.isnan(mocap_array[:,0,:])), axis=1))
+    # # List all markers seen at least once
+    # markers_seen = np.where(np.any(np.logical_not(np.isnan(mocap_array[:,0,:])), axis=1))
 
-    # Iterate over each marker, ask for a joint assignment, and add a corresponding feature
-
-
+    # # Iterate over each marker, ask for a joint assignment, and add a corresponding feature
 
 
 
+
+    rospy.init_node('marker_assignments')
     assign = MarkerAssignments(kin_tree)
 
     #Get the first mocap frame to determine how many markers there are
-    #Wait 5 seconds for the frame and quit if it isn't received
+    #Wait 30 seconds for the frame and quit if it isn't received
     num_markers = None
-    for i in range(50):
+    for i in range(300):
         frame = assign.get_last_frame()
         if frame is not None:
             num_markers = len(frame.points)
@@ -141,21 +127,7 @@ def main():
             assign.highlight_group(group_name)
             raw_input('Displaying group ' + group_name + ' - Press <Enter> to continue...')
 
-    #Print the resulting assignments
-    print('Final assignments:')
-    print(assign.get_assignments())
-
-    #Generate the dictionary to write to a file
-    file_id = str(uuid.uuid1())
-    output_dict = {'id': file_id, 'assignments':assign.get_assignments()}
-
-    #Write the assignments to a file
-    filename = JSON_FILENAME
-    if not filename:
-        filename = raw_input('Enter a filename to save the assignments to: ')
-    with open(filename, 'w') as output_file:
-        json.dump(output_dict, output_file, indent=4)
-        print('Assignments written to ' + filename)
+    assign._tree.json(args.output_kinmodel_file)
 
 if __name__ == '__main__':
     try:

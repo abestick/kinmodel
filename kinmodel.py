@@ -110,7 +110,7 @@ class Joint(object):
         if filename is None:
                 return json.dumps(self, default=lambda o: o._json(), **args)
         else:
-            with open(filename) as output_file:
+            with open(filename, 'w+') as output_file:
                 json.dump(self, output_file, default=lambda o: o._json(), **args)
 
     def _json(self):
@@ -474,7 +474,7 @@ class KinematicTree(object):
         if root is not None:
             self._root = root
         elif json_string is not None:
-            self._root = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
+            self._root = json.loads(json_string, object_hook=obj_to_joint, encoding='utf-8')
         elif json_filename is not None:
             with open(json_filename) as json_file:
                 self._root = json.load(json_file, object_hook=obj_to_joint, encoding='utf-8')
@@ -607,8 +607,8 @@ class KinematicTree(object):
             root = self._root
         if joints is None:
             joints = {}
-        joints[root.name] = root
         if hasattr(root, 'children'):
+            joints[root.name] = root
             for child in root.children:
                 self.get_joints(root=child, joints=joints)
         return joints
@@ -813,6 +813,8 @@ def main():
     tree = KinematicTree(j1)
 
     string = tree.json()
+    with open('test_kinmodel.json', 'w') as json_file:
+        json_file.write(string)
 
     test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
 
