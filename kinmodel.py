@@ -8,6 +8,9 @@ import se3
 from math import pi, log10, sqrt
 import json
 import random
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
@@ -198,16 +201,21 @@ class Twist(object):
         return self._xi
 
     def omega(self):
-        return self._xi[:3,:]
+        return self._xi.squeeze()[:3]
 
     def nu(self):
-        return self._xi[3:,:]
+        return self._xi.squeeze()[3:]
 
     def exp(self, theta):
         return Transform(homog_array=se3.expse3(self._xi, theta))
 
     def vectorize(self):
         return np.array(self._xi).squeeze()
+
+    def normalize(self):
+        norm_constant = la.norm(self.omega())
+        self._xi = self._xi / norm_constant
+        return norm_constant
 
     def _json(self):
         return self._xi.squeeze().tolist()
@@ -613,7 +621,10 @@ class KinematicTree(object):
                 self.get_joints(root=child, joints=joints)
         return joints
 
-    def compute_error(self, config_dict, feature_obs_dict):
+    def get_root_joint(self):
+        return self._root
+
+    def compute_error(self, config_dict, feature_obs_dict, vis=False):
         # Set configuration and compute pox, assuming config_dict maps joint names to float values
         self.set_config(config_dict)
         self._compute_pox()
@@ -624,6 +635,32 @@ class KinematicTree(object):
         sum_squared_errors = 0
         for feature in feature_obs:
             sum_squared_errors += feature_obs[feature].error(feature_obs_dict[feature]) ** 2
+
+        # Visualize the residuals
+        if vis:
+            figure = plt.figure()
+            axes = figure.add_subplot(111, projection='3d')
+
+            for feature in feature_obs:
+                # Predicted position
+                predicted = feature_obs[feature].q()
+                axes.scatter(predicted[0], predicted[1], predicted[2], c='r', marker='o')
+
+                # Observed position
+                try:
+                    observed = feature_obs_dict[feature].q()
+                    axes.scatter(observed[0], observed[1], observed[2], c='b', marker='o')
+                    endpoints = np.concatenate((observed[:,None], predicted[:,None]), axis=1)
+                    axes.plot(endpoints[0,:], endpoints[1,:], endpoints[2,:], 'k-')
+                except KeyError:
+                    pass
+            axes.set_xlabel('X Label')
+            axes.set_ylabel('Y Label')
+            axes.set_zlabel('Z Label')
+            axes.auto_scale_xyz([-0.5,0.5], [-0.5,0.5], [-0.5,0.5])
+            plt.ion()
+            plt.pause(10)
+            plt.close()
 
         # Compute and return the euclidean sum of the error values for each feature
         return sum_squared_errors
@@ -641,10 +678,39 @@ class KinematicTree(object):
 
     def get_objective_function(self, feature_obs_dict_list, **args):
         return KinematicTreeObjectiveFunction(self, feature_obs_dict_list, **args)
-        # Return a KinematicTreeObjectiveFunction object which supports
-        # - Compute error for a vector of parameters
-        # - Convert a vector of parameters back to dicts of parameter values
-        # - Get the initial values of the parameters as a vector and save the order/type of them
+    
+    def fit_params(self, feature_obs, configs=None, 
+            optimize={'configs':True, 'twists':True, 'features':True}, print_info=True):
+        # Set the feature positions to those seen at the zero configuration
+        self.set_features(feature_obs[0])
+
+        # Create an objective function to optimize
+        opt = self.get_objective_function(feature_obs, optimize=optimize)
+        initial_params = opt.get_current_param_vector()
+        initial_error = opt.error(initial_params)
+
+        # Define a callback for the optimization
+        if print_info:
+            def opt_callback(current_params):
+                print('Current error: ' + str(opt.error(current_params)))
+        else:
+            opt_callback = None
+
+        # Run the optimization
+        result = scipy.optimize.minimize(opt.error, initial_params, callback=opt_callback,
+                method='L-BFGS-B')
+
+        # Normalize the twists
+        final_configs, final_twists, final_features = opt.unvectorize(result.x)
+        if optimize['twists']:
+            final_configs, final_twists, final_features = opt.unvectorize(result.x)
+            for twist in final_twists:
+                norm_constant = final_twists[twist].normalize()
+                for config in final_configs:
+                    config[twist] = config[twist] * norm_constant
+            self.set_twists(final_twists)
+        return final_configs, final_twists, final_features
+
         
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
@@ -828,8 +894,6 @@ def main():
     opt.error(test)
 
     result = scipy.optimize.minimize(opt.error, test)
-
-    
     1/0
 
 if __name__ == '__main__':
