@@ -680,7 +680,7 @@ class KinematicTree(object):
         return KinematicTreeObjectiveFunction(self, feature_obs_dict_list, **args)
     
     def fit_params(self, feature_obs, configs=None, 
-            optimize={'configs':True, 'twists':True, 'features':True}, print_info=True):
+            optimize={'configs':True, 'twists':True, 'features':False}, print_info=True):
         # Set the feature positions to those seen at the zero configuration
         self.set_features(feature_obs[0])
 
@@ -711,6 +711,101 @@ class KinematicTree(object):
             self.set_twists(final_twists)
         return final_configs, final_twists, final_features
 
+class KinematicTreeParamVectorizer(object):
+    def __init__(self):
+        self._last_vectorized_sequence = None
+        self._vectorize = {'configs':False, 'twists':False, 'features':False}
+
+    def vectorize(self, configs=None, twists=None, features=None):
+        # configs - list of dicts of floats, first is taken as fixed and not included in vector
+        # twists - dict of Twist objects
+        # features - dict of GeometricPrimitive objects
+        self._last_vectorized_sequence = []
+        vector_list = []
+
+        # Save a list of (type ('config'/'feature'/'twist'), name or (num, name) for config, instance type, length) tuples
+        # Add configs
+        if configs is not None:
+            for i, config in enumerate(configs):
+                for joint_name in config:
+                    description_tuple = ('config', (i, joint_name), 'int', 1)
+                    self._last_vectorized_sequence.append(description_tuple)
+                    vector_list.append(config[joint_name])
+            self._vectorize['configs'] = True
+        else:
+            self._vectorize['configs'] = False
+
+        # Add twists
+        if twists is not None:
+            for joint_name in twists:
+                if twists[joint_name] is not None:
+                    vec_value = twists[joint_name].vectorize()
+                    description_tuple = ('twist', joint_name, type(twists[joint_name]), len(vec_value))
+                    self._last_vectorized_sequence.append(description_tuple)
+                    vector_list.extend(vec_value)
+            self._vectorize['twists'] = True
+        else:
+            self._vectorize['twists'] = False
+
+        # Add features
+        if features is not None:
+            for feature_name in features:
+                vec_value = features[feature_name].vectorize()
+                description_tuple = ('feature', feature_name, type(features[feature_name]),
+                        len(vec_value))
+                self._last_vectorized_sequence.append(description_tuple)
+                vector_list.extend(vec_value)
+            self._vectorize['features'] = True
+        else:
+            self._vectorize['features'] = False
+
+        return np.array(vector_list)
+
+    def unvectorize(self, vectorized_params):
+        # Shouldn't touch the tree, should operate on params and the order saved by vectorize()
+        # Return config dict list, twists dict, features dict
+        vector_ind = 0
+        if self._vectorize['configs']:
+            configs = []
+        else:
+            configs = None
+        if self._vectorize['twists']:
+            twists = {}
+        else:
+            twists = None
+        if self._vectorize['features']:
+            features = {}
+        else:
+            features = None
+
+        for desc_tuple in self._last_vectorized_sequence:
+            # Pull out the vector value and description tuple for this config/twist/feature
+            vec_value = vectorized_params[vector_ind:vector_ind+desc_tuple[3]]
+            vector_ind += desc_tuple[3]
+
+            # Reconstruct the original data structures
+            if desc_tuple[0] == 'config':
+                if self._vectorize['configs']:
+                    theta = vec_value[0]
+                    config_idx = desc_tuple[1][0]
+                    name = desc_tuple[1][1]
+                    while len(configs) < config_idx + 1:
+                        configs.append({})
+                    configs[config_idx][name] = theta
+            elif desc_tuple[0] == 'twist':
+                if self._vectorize['twists']:
+                    twist = desc_tuple[2](vectorized=vec_value)
+                    name = desc_tuple[1]
+                    twists[name] = twist
+            elif desc_tuple[0] == 'feature':
+                if self._vectorize['features']:
+                    feature = desc_tuple[2](vectorized=vec_value)
+                    name = desc_tuple[1]
+                    features[name] = feature
+            else:
+                raise ValueError('Invalid vectorized type: ' + desc_tuple[0])
+        return configs, twists, features
+
         
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
@@ -727,19 +822,30 @@ class KinematicTreeObjectiveFunction(object):
             if len(config_dict_list) != len(feature_obs_dict_list):
                 raise ValueError('Must have same num of feature obs and config initial guesses')
             self._config_dict_list = config_dict_list
-        self._last_vectorized_sequence = None
+        self._vectorizer = KinematicTreeParamVectorizer()
         self._optimize = optimize
 
     def get_current_param_vector(self):
         # Pull params from KinematicTree and pass to vectorize
-        twists = self._tree.get_twists()
-        features = self._tree.get_features()
+        if self._optimize['twists']:
+            twists = self._tree.get_twists()
+        else:
+            twists = None
+        if self._optimize['features']:
+            features = self._tree.get_features()
+        else:
+            features = None
+        if self._optimize['configs']:
+            configs = self._config_dict_list[1:]
+        else:
+            configs = None
 
         # Vectorize and return
-        return self.vectorize(self._config_dict_list, twists, features)
+        return self._vectorizer.vectorize(configs, twists, features)
 
     def error(self, vectorized_params):
         # Unvectorize params
+        # Use self.unvectorize() so the zero config is handled correctly
         configs, twists, features = self.unvectorize(vectorized_params)
         if configs is not None:
             self._config_dict_list = configs
@@ -753,89 +859,10 @@ class KinematicTreeObjectiveFunction(object):
         # Compute error
         return self._tree.compute_sequence_error(self._config_dict_list, self._feature_obs)
 
-    def vectorize(self, configs, twists, features):
-        # configs - list of dicts of floats, first is taken as fixed and not included in vector
-        # twists - dict of Twist objects
-        # features - dict of GeometricPrimitive objects
-        self._last_vectorized_sequence = []
-        vector_list = []
-
-        # Save a list of (type ('config'/'feature'/'twist'), name or (num, name) for config, instance type, length) tuples
-
-        # Shouldn't touch the tree itself, should just operate on the params and save the order
-        # Take first config in list as fixed - don't include in vector
-
-        # Add configs
-        if self._optimize['configs']:
-            for i, config in enumerate(configs[1:]):
-                for joint_name in config:
-                    description_tuple = ('config', (i+1, joint_name), 'int', 1)
-                    self._last_vectorized_sequence.append(description_tuple)
-                    vector_list.append(config[joint_name])
-
-        # Add twists
-        if self._optimize['twists']:
-            for joint_name in twists:
-                if twists[joint_name] is not None:
-                    vec_value = twists[joint_name].vectorize()
-                    description_tuple = ('twist', joint_name, type(twists[joint_name]), len(vec_value))
-                    self._last_vectorized_sequence.append(description_tuple)
-                    vector_list.extend(vec_value)
-
-        # Add features
-        if self._optimize['features']:
-            for feature_name in features:
-                vec_value = features[feature_name].vectorize()
-                description_tuple = ('feature', feature_name, type(features[feature_name]),
-                        len(vec_value))
-                self._last_vectorized_sequence.append(description_tuple)
-                vector_list.extend(vec_value)
-
-        return np.array(vector_list)
-
     def unvectorize(self, vectorized_params):
-        # Shouldn't touch the tree, should operate on params and the order saved by vectorize()
-        # Return config dict list, twists dict, features dict
-        vector_ind = 0
-        if self._optimize['configs']:
-            configs = [self._config_dict_list[0]]
-        else:
-            configs = None
-        if self._optimize['twists']:
-            twists = {}
-        else:
-            twists = None
-        if self._optimize['features']:
-            features = {}
-        else:
-            features = None
-
-        for desc_tuple in self._last_vectorized_sequence:
-            # Pull out the vector value and description tuple for this config/twist/feature
-            vec_value = vectorized_params[vector_ind:vector_ind+desc_tuple[3]]
-            vector_ind += desc_tuple[3]
-
-            # Reconstruct the original data structures
-            if desc_tuple[0] == 'config':
-                if self._optimize['configs']:
-                    theta = vec_value[0]
-                    config_idx = desc_tuple[1][0]
-                    name = desc_tuple[1][1]
-                    while len(configs) < config_idx + 1:
-                        configs.append({})
-                    configs[config_idx][name] = theta
-            elif desc_tuple[0] == 'twist':
-                if self._optimize['twists']:
-                    twist = desc_tuple[2](vectorized=vec_value)
-                    name = desc_tuple[1]
-                    twists[name] = twist
-            elif desc_tuple[0] == 'feature':
-                if self._optimize['features']:
-                    feature = desc_tuple[2](vectorized=vec_value)
-                    name = desc_tuple[1]
-                    features[name] = feature
-            else:
-                raise ValueError('Invalid vectorized type: ' + desc_tuple[0])
+        configs, twists, features = self._vectorizer.unvectorize(vectorized_params)
+        if configs is not None:
+            configs.insert(0, self._config_dict_list[0])
         return configs, twists, features
 
 def generate_synthetic_observations(tree, num_obs=100):
