@@ -62,6 +62,7 @@ def main():
         feature_obs.append(feature_dict)
 
     # Run the optimization
+    kin_tree.set_features(feature_obs[0])
     final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs)
 
     # Test visualization

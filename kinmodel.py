@@ -75,7 +75,7 @@ class Feature(object):
         if hasattr(primitive, 'homog'):
             self.primitive = primitive
         else:
-            self.primitive = list_to_primitive(primitive)
+            self.primitive = new_geometric_primitive(primitive)
 
     def _json(self):
         OUTPUT_ATTRIBS = ['name', 'primitive']
@@ -304,21 +304,18 @@ class Point(GeometricPrimitive):
 
 
 def list_to_primitive(orig_obj):
-    try:
-        arr = np.array(orig_obj)
-        if arr.shape == (4,):
-            if arr[3] == 1:
-                return Point(x=arr[0:3])
-            elif arr[3] == 0:
-                return Vector(x=arr[0:3])
-        elif arr.shape == (4,4):
-            return Transform(homog=arr)
-        elif arr.shape == (3,3):
-            return Rotation(matrix=arr)
-        elif arr.shape == (6,):
-            return Twist(omega=arr[0:3], nu=arr[3:6])
-    except TypeError:
-        pass
+    arr = np.array(orig_obj)
+    if arr.shape == (4,):
+        if arr[3] == 1:
+            return Point(x=arr[0:3])
+        elif arr[3] == 0:
+            return Vector(x=arr[0:3])
+    elif arr.shape == (4,4):
+        return Transform(homog=arr)
+    elif arr.shape == (3,3):
+        return Rotation(matrix=arr)
+    elif arr.shape == (6,):
+        return Twist(omega=arr[0:3], nu=arr[3:6])
     return orig_obj
 
 def obj_to_joint(orig_obj):
@@ -328,7 +325,6 @@ def obj_to_joint(orig_obj):
         return Feature(**orig_obj)
     else:
         return orig_obj
-
     # else:
     #     raise TypeError('The list could not be converted to a geometric primitive')
 
@@ -682,10 +678,10 @@ class KinematicTree(object):
     def fit_params(self, feature_obs, configs=None, 
             optimize={'configs':True, 'twists':True, 'features':False}, print_info=True):
         # Set the feature positions to those seen at the zero configuration
-        self.set_features(feature_obs[0])
+        # self.set_features(feature_obs[0])
 
         # Create an objective function to optimize
-        opt = self.get_objective_function(feature_obs, optimize=optimize)
+        opt = self.get_objective_function(feature_obs, optimize=optimize, config_dict_list=configs)
         initial_params = opt.get_current_param_vector()
         initial_error = opt.error(initial_params)
 
@@ -702,13 +698,17 @@ class KinematicTree(object):
 
         # Normalize the twists
         final_configs, final_twists, final_features = opt.unvectorize(result.x)
-        if optimize['twists']:
-            final_configs, final_twists, final_features = opt.unvectorize(result.x)
+        if final_twists is not None:
             for twist in final_twists:
                 norm_constant = final_twists[twist].normalize()
                 for config in final_configs:
                     config[twist] = config[twist] * norm_constant
             self.set_twists(final_twists)
+
+        #Set the tree's features to the optimal values
+        if final_features is not None:
+            self.set_features(final_features)
+
         return final_configs, final_twists, final_features
 
 class KinematicTreeParamVectorizer(object):
@@ -717,7 +717,7 @@ class KinematicTreeParamVectorizer(object):
         self._vectorize = {'configs':False, 'twists':False, 'features':False}
 
     def vectorize(self, configs=None, twists=None, features=None):
-        # configs - list of dicts of floats, first is taken as fixed and not included in vector
+        # configs - list of dicts of floats
         # twists - dict of Twist objects
         # features - dict of GeometricPrimitive objects
         self._last_vectorized_sequence = []
