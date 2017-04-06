@@ -34,6 +34,8 @@ def new_geometric_primitive(input_data):
         return Point()
     elif homog_array.shape == (4,) and homog_array[3] == 0:
         return Vector(homog_array)
+    elif homog_array.shape == (6,):
+        return Twist(omega=homog_array[0:3], nu=homog_array[3:6])
     else:
         raise TypeError('input_data must be array-like or a GeometricPrimitive')
 
@@ -99,15 +101,17 @@ class Joint(object):
     """
     def __init__(self, name, children=None, twist=None):
         self.name = name
-        if children is not None:
-            children = children
+        if children is None:
+            self.children = []
         else:
-            children = []
-        self.children = children #Children of the joint (other Joints)
-        if hasattr(twist, '_xi'):
+            self.children = children #Children of the joint (other Joints)
+
+        if twist is None:
+            self.twist = None
+        elif hasattr(twist, '_xi'):
             self.twist = twist
         else:
-            self.twist = list_to_primitive(twist)
+            self.twist = new_geometric_primitive(twist)
 
     def json(self, filename=None, args={}):
         if filename is None:
@@ -302,22 +306,6 @@ class Point(GeometricPrimitive):
     def vectorize(self):
         return self._H[:3]
 
-
-def list_to_primitive(orig_obj):
-    arr = np.array(orig_obj)
-    if arr.shape == (4,):
-        if arr[3] == 1:
-            return Point(x=arr[0:3])
-        elif arr[3] == 0:
-            return Vector(x=arr[0:3])
-    elif arr.shape == (4,4):
-        return Transform(homog=arr)
-    elif arr.shape == (3,3):
-        return Rotation(matrix=arr)
-    elif arr.shape == (6,):
-        return Twist(omega=arr[0:3], nu=arr[3:6])
-    return orig_obj
-
 def obj_to_joint(orig_obj):
     if 'children' in orig_obj:
         return Joint(**orig_obj)
@@ -325,8 +313,6 @@ def obj_to_joint(orig_obj):
         return Feature(**orig_obj)
     else:
         return orig_obj
-    # else:
-    #     raise TypeError('The list could not be converted to a geometric primitive')
 
 class IKSolver(object):
     """Contains the kinematic tree, cost functions, and constraints associated
@@ -676,7 +662,7 @@ class KinematicTree(object):
         return KinematicTreeObjectiveFunction(self, feature_obs_dict_list, **args)
     
     def fit_params(self, feature_obs, configs=None, 
-            optimize={'configs':True, 'twists':True, 'features':False}, print_info=True):
+            optimize={'configs':True, 'twists':True, 'features':True}, print_info=True):
         # Set the feature positions to those seen at the zero configuration
         # self.set_features(feature_obs[0])
 
