@@ -1,3 +1,4 @@
+from __future__ import print_function
 import numpy as np
 import scipy as sp
 import numpy.linalg as np_la
@@ -12,6 +13,8 @@ import matplotlib.pyplot as plt
 import cProfile
 import json
 import kinmodel
+import my_ukf
+
 
 # Need: base frame marker indices, dicts of marker observations (name->primitive) at each sample point
 
@@ -41,8 +44,8 @@ def main():
     desired = ukf_mocap.get_frames()[base_indices,:,0]
     desired = desired - np.mean(desired, axis=0)
 
-    # ukf_mocap.set_sampling(1000)
-    # ukf_mocap.set_coordinates(base_indices, desired, mode='time_varying')
+    # ukf_mocap.set_sampling(500)
+    ukf_mocap.set_coordinates(base_indices, desired, mode='time_varying')
 
     data_array = np.dstack((calib_data['full_sequence'][:,:,0:1],
                                 calib_data['full_sequence'][:,:,calib_data[GROUP_NAME]]))
@@ -62,11 +65,41 @@ def main():
         feature_obs.append(feature_dict)
 
     # Run the optimization
-    kin_tree.set_features(feature_obs[0])
-    final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs)
+    # kin_tree.set_features(feature_obs[0])
+    # final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs)
+
+    test_ss_model = kinmodel.KinematicTreeStateSpaceModel(kin_tree)
+    measurement_dim = len(test_ss_model.measurement_model(np.array([0.0, 0.0])))
+    state_dim = 2
+
+    #Generate the full sequence feature observation dicts
+    ukf_obs = []
+    for frame, timestamp in ukf_mocap:
+        feature_dict = {}
+        for marker_idx in range(13):
+            obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx,:,0], np.ones(1))))
+            feature_dict['mocap_' + str(marker_idx)] = obs_point
+        ukf_obs.append(feature_dict)
+
+    # Initialize the filter
+    initial_obs = test_ss_model.vectorize_measurement(ukf_obs[1])
+    uk_filter = my_ukf.UnscentedKalmanFilter(test_ss_model.process_model, test_ss_model.measurement_model, np.zeros(2), np.identity(2)*0.25)
+    for i in range(50):
+        print(uk_filter.filter(initial_obs))
+
+    # Create output array
+    ukf_output = np.zeros((state_dim, len(ukf_obs)))
+
+    # Run the filter
+    for i, obs in enumerate(ukf_obs):
+        print('UKF Step: ' + str(i) + '/' + str(len(ukf_obs)))#, end='\r')
+        obs_array = test_ss_model.vectorize_measurement(obs)
+        ukf_output[:,i:i+1] = uk_filter.filter(obs_array)[0]
+    print(ukf_output[:,i:i+1])
+
 
     # Test visualization
-    kin_tree.compute_error(final_configs[3], feature_obs[3], vis=True)
+    # kin_tree.compute_error(final_configs[3], feature_obs[3], vis=True)
     1/0
 
 

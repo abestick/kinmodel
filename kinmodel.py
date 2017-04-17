@@ -510,6 +510,7 @@ class KinematicTree(object):
         try:
             config[root.name] = root._theta
         except AttributeError:
+            # This is an immovable joint (twist=None)
             pass
         if hasattr(root, 'children'):
             for child in root.children:
@@ -791,6 +792,56 @@ class KinematicTreeParamVectorizer(object):
             else:
                 raise ValueError('Invalid vectorized type: ' + desc_tuple[0])
         return configs, twists, features
+
+
+class KinematicTreeStateSpaceModel(object):
+    def __init__(self, tree):
+        self._tree = tree
+
+        # Initialize the state vectorizer to output only config values
+        self._state_vectorizer = KinematicTreeParamVectorizer()
+        tree_joints = self._tree.get_joints()
+        initial_config = {joint:0.0 for joint in tree_joints if tree_joints[joint].twist is not None}
+        self._state_vectorizer.vectorize(configs=[initial_config])
+
+        # Initialize the measurement vectorizer to output only feature values
+        self._meas_vectorizer = KinematicTreeParamVectorizer()
+        self._meas_vectorizer.vectorize(features=self._tree.get_features())
+
+    def measurement_model(self, state_vector):
+        """Returns a vectorized observation of predicted feature poses given state=state_vector.
+
+        Returned array is (sum(len(feature_i.vectorize())),).
+        """
+        # Shape array correctly
+        state_vector = state_vector.squeeze()
+        if state_vector.ndim < 2:
+            state_vector = state_vector[:,None]
+        output_arr = None
+
+        for j in range(state_vector.shape[1]):
+            # Turn config_vector back into a config dict
+            config_dict = self._state_vectorizer.unvectorize(state_vector[:,j])[0][0]
+
+            # Set the kinematic tree to the correct config, observe features, vectorize, and return
+            self._tree.set_config(config_dict)
+            self._tree._compute_pox()
+            feature_obs = self._tree.observe_features()
+            output_obs = self._meas_vectorizer.vectorize(features=feature_obs)
+
+            # Write to the output array
+            if output_arr is None:
+                # Initialize here so we know what the length of each measurment vector will be
+                output_arr = np.zeros((len(output_obs), state_vector.shape[1]))
+            output_arr[:,j] = output_obs
+        return output_arr
+
+    def process_model(self, state_vector):
+        # Assume trivial dynamics
+        return state_vector
+
+    def vectorize_measurement(self, feature_obs):
+        return self._meas_vectorizer.vectorize(features=feature_obs)[:,None]
 
         
 class KinematicTreeObjectiveFunction(object):
