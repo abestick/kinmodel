@@ -417,8 +417,12 @@ class MocapFile(MocapSource):
                 else:
                     orig_points = trans_points[markers[visible_inds],:,i]
                     desired_points = new_coords[visible_inds]
-                    homog, rot_0 = find_homog_trans(orig_points, desired_points, rot_0=rot_0)
-                    homog_0 = homog
+                    try:
+	                    homog, rot_0 = find_homog_trans(orig_points, desired_points, rot_0=rot_0)
+	                    homog_0 = homog
+                    except ValueError:
+                    	# Not enough points visible for tf.transformations to compute the transform
+                    	homog = homog_0
 
                 #Apply the transformation to the frame
                 homog_coords = np.vstack((trans_points[:,:,i].T, np.ones((1,trans_points.shape[0]))))
@@ -495,37 +499,43 @@ class RateTimer():
                 # print('Waiting: ' + str(wait_time))
                 time.sleep(wait_time)
 
-
-def find_homog_trans(points_a, points_b, err_threshold=0, rot_0=None):
+def find_homog_trans(points_a, points_b, err_threshold=0, rot_0=None, alg='svd'):
     """Finds a homogeneous transformation matrix that, when applied to 
     the points in points_a, minimizes the squared Euclidean distance 
     between the transformed points and the corresponding points in 
     points_b. Both points_a and points_b are (n, 3) arrays.
     """
-    #Align the centroids of the two point clouds
-    cent_a = sp.average(points_a, axis=0)
-    cent_b = sp.average(points_b, axis=0)
-    points_a = points_a - cent_a
-    points_b = points_b - cent_b
-    
-    #Define the error as a function of a rotation vector in R^3
-    rot_cost = lambda rot: (sp.dot(vec_to_rot(rot), points_a.T).T
-                    - points_b).flatten()**2
-    
-    #Run the optimization
-    if rot_0 == None:
-        rot_0 = sp.zeros(3)
-    rot = opt.leastsq(rot_cost, rot_0)[0]
-    
-    #Compute the final homogeneous transformation matrix
-    homog_1 = sp.eye(4)
-    homog_1[0:3, 3] = -cent_a
-    homog_2 = sp.eye(4)
-    homog_2[0:3,0:3] = vec_to_rot(rot)
-    homog_3 = sp.eye(4)
-    homog_3[0:3,3] = cent_b
-    homog = sp.dot(homog_3, sp.dot(homog_2, homog_1))
-    return homog, rot
+    #OLD ALGORITHM ----------------------
+    if alg == 'opt':
+        #Align the centroids of the two point clouds
+        cent_a = sp.average(points_a, axis=0)
+        cent_b = sp.average(points_b, axis=0)
+        points_a = points_a - cent_a
+        points_b = points_b - cent_b
+        
+        #Define the error as a function of a rotation vector in R^3
+        rot_cost = lambda rot: (sp.dot(vec_to_rot(rot), points_a.T).T
+                        - points_b).flatten()**2
+        
+        #Run the optimization
+        if rot_0 == None:
+            rot_0 = sp.zeros(3)
+        rot = opt.leastsq(rot_cost, rot_0)[0]
+        
+        #Compute the final homogeneous transformation matrix
+        homog_1 = sp.eye(4)
+        homog_1[0:3, 3] = -cent_a
+        homog_2 = sp.eye(4)
+        homog_2[0:3,0:3] = vec_to_rot(rot)
+        homog_3 = sp.eye(4)
+        homog_3[0:3,3] = cent_b
+        homog = sp.dot(homog_3, sp.dot(homog_2, homog_1))
+        return homog, rot
+    #NEW ALGORITHM -----------------------
+    elif alg == 'svd':
+    	import tf.transformations as convert
+        homog = convert.superimposition_matrix(points_a.T, points_b.T)
+        return homog, None
 
 
 def vec_to_rot(x):
