@@ -7,7 +7,6 @@ import time
 import sensor_msgs.msg as sensor_msgs
 import geometry_msgs.msg as geometry_msgs
 import std_msgs.msg as std_msgs
-import load_mocap
 import numpy as np
 import json
 from collections import deque

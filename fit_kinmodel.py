@@ -3,7 +3,7 @@ import numpy as np
 import scipy as sp
 import numpy.linalg as np_la
 import sys
-import load_mocap
+import phasespace.load_mocap as load_mocap
 import argparse
 import random
 # import uk
@@ -14,6 +14,7 @@ import cProfile
 import json
 import kinmodel
 import my_ukf
+import matplotlib.pyplot as plt
 
 
 # Need: base frame marker indices, dicts of marker observations (name->primitive) at each sample point
@@ -85,17 +86,20 @@ def main():
     initial_obs = test_ss_model.vectorize_measurement(ukf_obs[1])
     uk_filter = my_ukf.UnscentedKalmanFilter(test_ss_model.process_model, test_ss_model.measurement_model, np.zeros(2), np.identity(2)*0.25)
     for i in range(50):
-        print(uk_filter.filter(initial_obs))
+        uk_filter.filter(initial_obs)
 
     # Create output array
     ukf_output = np.zeros((state_dim, len(ukf_obs)))
 
     # Run the filter
     for i, obs in enumerate(ukf_obs):
-        print('UKF Step: ' + str(i) + '/' + str(len(ukf_obs)))#, end='\r')
+        print('UKF Step: ' + str(i) + '/' + str(len(ukf_obs)), end='\r')
         obs_array = test_ss_model.vectorize_measurement(obs)
         ukf_output[:,i:i+1] = uk_filter.filter(obs_array)[0]
     print(ukf_output[:,i:i+1])
+    plt.plot(ukf_output.T)
+    plt.pause(10)
+
 
 
     # Test visualization
