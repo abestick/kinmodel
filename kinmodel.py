@@ -664,6 +664,7 @@ class KinematicTree(object):
     
     def fit_params(self, feature_obs, configs=None, 
             optimize={'configs':True, 'twists':True, 'features':True}, print_info=True):
+        # TODO: only do this for [0,0,0,1] features
         # Set the feature positions to those seen at the zero configuration
         # self.set_features(feature_obs[0])
 
@@ -943,7 +944,7 @@ def main():
     tree = KinematicTree(j1)
 
     string = tree.json()
-    with open('test_kinmodel.json', 'w') as json_file:
+    with open('base_kinmodel.json', 'w') as json_file:
         json_file.write(string)
 
     test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')

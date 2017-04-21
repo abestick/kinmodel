@@ -6,14 +6,13 @@ import sys
 import phasespace.load_mocap as load_mocap
 import argparse
 import random
-# import uk
 import scipy.optimize
 
 import matplotlib.pyplot as plt
 import cProfile
 import json
 import kinmodel
-import my_ukf
+import ukf
 import matplotlib.pyplot as plt
 
 
@@ -27,6 +26,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('kinmodel_json', help='The kinematic model JSON file')
     parser.add_argument('mocap_npz', help='The .npz file from mocap_recorder.py')
+    parser.add_argument('kinmodel_json_optimized', help='The .npz file from mocap_recorder.py')
     args = parser.parse_args()
 
     #Load the calibration sequence
@@ -41,6 +41,11 @@ def main():
         if not hasattr(child, 'children'):
             # This is a feature
             base_indices.append(int(child.name.split('_')[1]))
+
+    # Get all the marker indices of interest
+    all_marker_indices = []
+    for feature_name in kin_tree.get_features():
+        all_marker_indices.append(int(feature_name.split('_')[1]))
 
     desired = ukf_mocap.get_frames()[base_indices,:,0]
     desired = desired - np.mean(desired, axis=0)
@@ -59,15 +64,17 @@ def main():
     feature_obs = []
     for frame, timestamp in mocap:
         feature_dict = {}
-        for marker_idx in range(mocap.get_num_points()):
+        for marker_idx in all_marker_indices:
             if not np.isnan(frame[marker_idx,0,0]):
                 obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx,:,0], np.ones(1))))
                 feature_dict['mocap_' + str(marker_idx)] = obs_point
         feature_obs.append(feature_dict)
 
-    # Run the optimization
-    # kin_tree.set_features(feature_obs[0])
-    # final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs)
+    # Run the optimization and save the result
+    kin_tree.set_features(feature_obs[0])
+    final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs)
+    with open(args.kinmodel_json_optimized, 'w') as json_file:
+        json_file.write(kin_tree.json())
 
     test_ss_model = kinmodel.KinematicTreeStateSpaceModel(kin_tree)
     measurement_dim = len(test_ss_model.measurement_model(np.array([0.0, 0.0])))
@@ -77,14 +84,14 @@ def main():
     ukf_obs = []
     for frame, timestamp in ukf_mocap:
         feature_dict = {}
-        for marker_idx in range(13):
+        for marker_idx in all_marker_indices:
             obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx,:,0], np.ones(1))))
             feature_dict['mocap_' + str(marker_idx)] = obs_point
         ukf_obs.append(feature_dict)
 
     # Initialize the filter
     initial_obs = test_ss_model.vectorize_measurement(ukf_obs[1])
-    uk_filter = my_ukf.UnscentedKalmanFilter(test_ss_model.process_model, test_ss_model.measurement_model, np.zeros(2), np.identity(2)*0.25)
+    uk_filter = ukf.UnscentedKalmanFilter(test_ss_model.process_model, test_ss_model.measurement_model, np.zeros(2), np.identity(2)*0.25)
     for i in range(50):
         uk_filter.filter(initial_obs)
 
