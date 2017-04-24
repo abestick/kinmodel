@@ -47,8 +47,10 @@ def main():
         all_marker_indices.append(int(feature_name.split('_')[1]))
 
     # Set the base coordinate transform for the mocap stream
-    desired = ukf_mocap.read()[0][base_indices,:,0]
-    desired = desired - np.mean(desired, axis=0)
+    desired = np.zeros((len(base_indices), 3, 1))
+    all_features = kin_tree.get_features()
+    for i, idx in enumerate(base_indices):
+        desired[i,:,0] = all_features['mocap_' + str(idx)].q()
     ukf_mocap.set_coordinates(base_indices, desired, mode='time_varying')
 
     # Create the observation and measurement models
