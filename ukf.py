@@ -1,5 +1,7 @@
 import numpy as np
 import scipy.linalg as spla
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
@@ -14,7 +16,7 @@ class UnscentedKalmanFilter(object):
         self.Q = np.identity(state_dim) * Q
         self.R = R
 
-    def filter(self, observation):
+    def filter(self, observation, plot_error=False):
         """Runs a single step of the UKF and returns the current state mean and covariance
 
         observation - (state_dim,) ndarray: the observation at the current time
@@ -52,6 +54,8 @@ class UnscentedKalmanFilter(object):
         # Compute the error between the predicted and actual measurement values
         observation = observation.squeeze()
         error = observation - meas_mean
+        if plot_error:
+            self._plot_error(observation, meas_mean)
 
         # Compute the Kalman gain
         kalman_gain = cross_covar.dot(spla.inv(meas_covar))
@@ -60,6 +64,34 @@ class UnscentedKalmanFilter(object):
         self.x = process_mean[:,None] + kalman_gain.dot(error)[:,None]
         self.P = process_covar - kalman_gain.dot(meas_covar).dot(kalman_gain.T)
         return self.x, self.P
+
+    def _plot_error(self, observation, meas_mean):
+        observation = np.reshape(observation, (-1,3))
+        meas_mean = np.reshape(meas_mean, (-1,3))
+
+        if not hasattr(self, 'figure'):
+            self.figure = plt.figure()
+            self.axes = self.figure.add_subplot(111, projection='3d')
+        else:
+            self.axes.clear()
+
+        for feature_idx in range(observation.shape[0]):
+            # Predicted position
+            predicted = meas_mean[feature_idx, :]
+            self.axes.scatter(predicted[0], predicted[1], predicted[2], c='r', marker='o')
+
+            # Observed position
+            observed = observation[feature_idx, :]
+            self.axes.scatter(observed[0], observed[1], observed[2], c='b', marker='o')
+            endpoints = np.concatenate((observed[:,None], predicted[:,None]), axis=1)
+            self.axes.plot(endpoints[0,:], endpoints[1,:], endpoints[2,:], 'k-')
+
+        self.axes.set_xlabel('X Label')
+        self.axes.set_ylabel('Y Label')
+        self.axes.set_zlabel('Z Label')
+        self.axes.auto_scale_xyz([-0.5,0.5], [-0.5,0.5], [-0.5,0.5])
+        plt.ion()
+        plt.pause(0.1)
 
 def generate_sigma_pts(mean, covariance, alpha_squared=1.0e-3):
     # Make mean (N,)

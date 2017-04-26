@@ -7,6 +7,7 @@ import phasespace.load_mocap as load_mocap
 import argparse
 import random
 import scipy.optimize
+import rospy
 
 import matplotlib.pyplot as plt
 import cProfile
@@ -14,6 +15,8 @@ import json
 import kinmodel
 import ukf
 import matplotlib.pyplot as plt
+import sensor_msgs.msg as sensor_msgs
+from std_msgs.msg import Header
 
 
 # Need: base frame marker indices, dicts of marker observations (name->primitive) at each sample point
@@ -25,12 +28,19 @@ def main():
     plt.ion()
     parser = argparse.ArgumentParser()
     parser.add_argument('kinmodel_json_optimized', help='The kinematic model JSON file')
-    parser.add_argument('mocap_npz')
+    # parser.add_argument('mocap_npz')
     args = parser.parse_args()
+    rospy.init_node('mocap_sub')
+
+    pub = rospy.Publisher('/kinmodel_joint_states', sensor_msgs.JointState, queue_size=100)
+
 
     #Load the calibration sequence
-    calib_data = np.load(args.mocap_npz)
-    ukf_mocap = load_mocap.MocapArray(calib_data['full_sequence'][:,:,:], FRAMERATE)
+    # calib_data = np.load(args.mocap_npz)
+    # ukf_mocap = load_mocap.MocapArray(calib_data['full_sequence'][:,:,:], FRAMERATE)
+
+    # Load the mocap stream
+    ukf_mocap = load_mocap.PointCloudStream('/mocap_point_cloud')
 
     # Get the base marker indices
     base_indices = []
@@ -62,13 +72,15 @@ def main():
     ukf_output = []
 
     # Run the filter
-    for i, (frame, timestamp) in enumerate(ukf_mocap):
+    i = 0
+    while not rospy.is_shutdown():
+        (frame, timestamp) = ukf_mocap.read()
+    # for i, (frame, timestamp) in enumerate(ukf_mocap):
         feature_dict = {}
         for marker_idx in all_marker_indices:
             obs_point = kinmodel.new_geometric_primitive(
                     np.concatenate((frame[marker_idx,:,0], np.ones(1))))
             feature_dict['mocap_' + str(marker_idx)] = obs_point
-
         if i == 0:
             print('Initializing UKF...', end='')
             sys.stdout.flush()
@@ -78,13 +90,23 @@ def main():
                 uk_filter.filter(initial_obs)
             print('Done!')
         else:
-            print('UKF Step: ' + str(i) + '/' + str(len(ukf_mocap)), end='\r')
+            # print('UKF Step: ' + str(i) + '/' + str(len(ukf_mocap)), end='\r')
+            # sys.stdout.flush()
             obs_array = test_ss_model.vectorize_measurement(feature_dict)
-            ukf_output.append(uk_filter.filter(obs_array)[0])
+            # ukf_output.append(uk_filter.filter(obs_array)[0])
+            joint_angles = uk_filter.filter(obs_array)[0]
+            # kin_tree.compute_error({'joint2':joint_angles[0], 'joint3':joint_angles[1]},
+            #         feature_dict, True)
+            msg = sensor_msgs.JointState(position=joint_angles.squeeze(), header=Header(stamp=rospy.Time.now()))
+            pub.publish(msg)
+        i += 1
+
+
     ukf_output = np.concatenate(ukf_output, axis=1)
     plt.plot(ukf_output.T)
-    plt.pause(10)
+    plt.pause(100)
+
     
 if __name__ == '__main__':
-    cProfile.run('main()', 'fit_kinmodel.profile')
-    # main()
+    # cProfile.run('main()', 'fit_kinmodel.profile')
+    main()
