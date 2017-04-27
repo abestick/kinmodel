@@ -168,9 +168,9 @@ class Transform(GeometricPrimitive):
 
     def adjoint(self):
         adj = np.zeros((6,6))
-        adj[:3,:3] = self.R
-        adj[3:,3:] = self.R
-        adj[3:,:3] = se3.skew(self.p).dot(self.R)
+        adj[:3,:3] = self.R()
+        adj[3:,3:] = self.R()
+        adj[3:,:3] = se3.skew(self.p()).dot(self.R())
         return adj
 
 
@@ -184,8 +184,11 @@ class Twist(object):
 
         ._xi - 6 x 1 - twist coordinates (om, v)
     """
-    def __init__(self, omega=None, nu=None, copy=None, vectorized=None):
-        if copy is not None:
+    def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None):
+        if xi is not None:
+            self._xi = xi.squeeze()[:, None]
+            assert self._xi.shape == (6,1)
+        elif copy is not None:
             self._xi = copy.xi().copy()
         elif omega is not None and nu is not None:
             omega = np.asarray(omega)
@@ -222,6 +225,10 @@ class Twist(object):
         norm_constant = la.norm(self.omega())
         self._xi = self._xi / norm_constant
         return norm_constant
+
+    def homog(self):
+        # Get the skew-symmetric, (4,4) matrix form of the twist
+        return se3.hat_(self._xi)
 
     def _json(self):
         return self._xi.squeeze().tolist()
@@ -494,29 +501,56 @@ class KinematicTree(object):
     def compute_jacobian(self, base_frame_name, manip_frame_name):
         # Compute the base to manip transform
         self._compute_pox()
+        self._compute_dpox()
         feature_obs = self.observe_features()
         base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name]
+        root_base_transform = feature_obs[base_frame_name]
 
-        # Get all the joints that connect the two frames
+        # Get all the joints that connect the two frames along the shortest path
         incoming_joints = self.get_chain(base_frame_name)
         outgoing_joints = self.get_chain(manip_frame_name)
-        while len(incoming_joints) > 0 and len(outgoing_joints) > 0 and
-                incoming_joints[0] == outgoing_joints[0]:
+        while (len(incoming_joints) > 0 and len(outgoing_joints) > 0 and
+                incoming_joints[0] == outgoing_joints[0]):
                 incoming_joints.pop(0)
                 outgoing_joints.pop(0)
 
-        # Stack up all the twists for each chain
+        # Collect all the twists for each chain
         all_joints = self.get_joints()
-        incoming_twists = np.zeros((6, len(incoming_joints)))
+        incoming_twists = {}
         for i, joint_name in enumerate(incoming_joints):
-            incoming_twists[:,i] = all_joints[joint_name].twist.xi()
-        outgoing_twists = np.zeros((6, len(outgoing_joints)))
+            try:
+                incoming_twists[joint_name] = all_joints[joint_name]._dpox.xi()
+            except AttributeError:
+                pass # Stationary joint - doesn't have a twist
+        outgoing_twists = {}
         for i, joint_name in enumerate(outgoing_joints):
-            outgoing_twists[:,i] = all_joints[joint_name].twist.xi()
+            try:
+                outgoing_twists[joint_name] = all_joints[joint_name]._dpox.xi()
+            except AttributeError:
+                pass #Stationary joint - doesn't have a twist
 
-            #TODO: Finish this!
+        # Negate the incoming twists
+        for joint in incoming_twists:
+            incoming_twists[joint] = -1.0 * incoming_twists[joint]
 
+        # Transform all the twists into the base frame
+        outgoing_twists.update(incoming_twists)
+        all_twists = outgoing_twists
+        root_base_inv_adjoint = root_base_transform.inv().adjoint()
+        for joint in all_twists:
+            all_twists[joint] = Twist(xi=root_base_inv_adjoint.dot(all_twists[joint]))
 
+        # From each twist, get the linear and angular velocity it will generate at the origin of
+        # the manip frame
+        manip_velocities = {}
+        manip_origin = Point(homog_array=base_manip_transform.homog()[:,3])
+        for joint in all_twists:
+            linear_vel = all_twists[joint].homog().dot(manip_origin.homog()[:, None])[0:3,0]
+            rotational_vel = all_twists[joint].omega()
+            manip_velocities[joint] = np.zeros((6,1))
+            manip_velocities[joint][0:3, 0] = linear_vel
+            manip_velocities[joint][3:6, 0] = rotational_vel
+        return manip_velocities
 
     def set_config(self, config, root=None):
         if root is None:
@@ -558,6 +592,21 @@ class KinematicTree(object):
         if hasattr(root, 'children'):
             for child_joint in root.children:
                 self._compute_pox(root=child_joint, parent_pox=root._pox)
+
+    def _compute_dpox(self, root=None, parent_pox=None):
+        #Make sure to call _compute_pox() immediately before this method
+        if root is None:
+            root = self._root
+        if parent_pox is None:
+            parent_pox = Transform()
+        try:
+            root._dpox = Twist(xi=(parent_pox.adjoint().dot(root.twist.xi())))
+        except AttributeError:
+            # Root doesn't have a twist (joint is stationary)
+            pass
+        if hasattr(root, 'children'):
+            for child_joint in root.children:
+                self._compute_dpox(root=child_joint, parent_pox=root._pox)
 
     def observe_features(self, root=None, observations=None):
         if root is None:
@@ -954,22 +1003,34 @@ def generate_synthetic_observations(tree, num_obs=100):
 
 
 def main():
+    j0 = Joint('joint0')
     j1 = Joint('joint1')
     j2 = Joint('joint2')
-    j3 = Joint('joint3')
 
-    j2.twist = Twist(omega=[1,0.0,0], nu=[1,2,0.0])
-    j3.twist = Twist(omega=[0,1.0,0], nu=[1,4,0.0])
+    j1.twist = Twist(omega=[0,0,1], nu=[1,1,0])
+    j2.twist = Twist(omega=[0,0,1], nu=[1,-1,0])
 
     ft1 = Feature('feat1', Point())
     ft2 = Feature('feat2', Point())
+    trans1 = np.array([[ 0, 1, 0,-1],
+                       [-1, 0, 0, 3],
+                       [ 0, 0, 1, 0],
+                       [ 0, 0, 0, 1]])
+    trans2 = np.array([[ 1, 0, 0, 3],
+                       [ 0, 1, 0, 1],
+                       [ 0, 0, 1, 0],
+                       [ 0, 0, 0, 1]])
+    trans1 = Feature('A', Transform(homog_array=trans1))
+    trans2 = Feature('B', Transform(homog_array=trans2))
 
-    j1.children.append(j2)
-    j1.children.append(j3)
-    j2.children.append(ft1)
-    j3.children.append(ft2)
+    j0.children.append(j1)
+    j0.children.append(j2)
+    j1.children.append(ft1)
+    j2.children.append(ft2)
+    j1.children.append(trans1)
+    j2.children.append(trans2)
 
-    tree = KinematicTree(j1)
+    tree = KinematicTree(j0)
 
     string = tree.json()
     with open('base_kinmodel.json', 'w') as json_file:
@@ -977,8 +1038,8 @@ def main():
 
     test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
 
-    tree.set_config({'joint2':0.0, 'joint3':0.0})
-    tree._compute_pox()
+    tree.set_config({'joint1':0.0, 'joint2':pi/2})
+    tree.compute_jacobian('A', 'B')
 
     # configs, feature_obs = generate_synthetic_observations(tree)
     1/0
