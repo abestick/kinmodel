@@ -1,5 +1,4 @@
 from abc import ABCMeta, abstractmethod
-#from new_skel import Skel
 from collections import OrderedDict
 import numpy as np
 import numpy.linalg as la
@@ -150,6 +149,9 @@ class Transform(GeometricPrimitive):
 
     def homog(self):
         return self._H
+
+    def inv(self):
+        return Transform(homog_array=la.inv(self.homog()))
 
     def trans(self):
         p = np.append(self._H[0:3,3], 0)
@@ -473,22 +475,48 @@ class KinematicTree(object):
     def json(self, filename=None):
         return self._root.json(filename, args={'separators':(',',': '), 'indent':4})
 
-    def get_transform(self, config, name):
-        #Set the current kinematic configuration
-        self._set_config(config)
- 
-        #Compute the transform
-        frame = self._named_frames[name]
-        g_st = Transform(homog=frame._parent_node.pox)
-        g_st = g_st.dot(frame)
-        return g_st
+    def get_chain(self, feature_name, root=None):
+        if root is None:
+            root = self._root
+        if root.name == feature_name:
+            return []
+        elif hasattr(root, 'children'):
+            # This is a joint
+            for child in root.children:
+                result = self.get_chain(feature_name, root=child)
+                if result is not None:
+                    result.insert(0, root.name)
+                    return result
+        # This is a feature - not the one we're looking for OR this is a joint without the desired
+        # feature in any of its child subtrees
+        return None
 
-    # def get_jacobian(self, config, name):
-    #     #Returns the spatial frame Jacobian for the manipulator
-    #     self._set_config(config)
-    #     frame = self._named_frames[name]
-    #     return np.hstack([j.dpox[1] for j in frame._parent_node.chain()])
-    #     return frame._parent_node.dpox[1]
+    def compute_jacobian(self, base_frame_name, manip_frame_name):
+        # Compute the base to manip transform
+        self._compute_pox()
+        feature_obs = self.observe_features()
+        base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name]
+
+        # Get all the joints that connect the two frames
+        incoming_joints = self.get_chain(base_frame_name)
+        outgoing_joints = self.get_chain(manip_frame_name)
+        while len(incoming_joints) > 0 and len(outgoing_joints) > 0 and
+                incoming_joints[0] == outgoing_joints[0]:
+                incoming_joints.pop(0)
+                outgoing_joints.pop(0)
+
+        # Stack up all the twists for each chain
+        all_joints = self.get_joints()
+        incoming_twists = np.zeros((6, len(incoming_joints)))
+        for i, joint_name in enumerate(incoming_joints):
+            incoming_twists[:,i] = all_joints[joint_name].twist.xi()
+        outgoing_twists = np.zeros((6, len(outgoing_joints)))
+        for i, joint_name in enumerate(outgoing_joints):
+            outgoing_twists[:,i] = all_joints[joint_name].twist.xi()
+
+            #TODO: Finish this!
+
+
 
     def set_config(self, config, root=None):
         if root is None:
@@ -952,13 +980,7 @@ def main():
     tree.set_config({'joint2':0.0, 'joint3':0.0})
     tree._compute_pox()
 
-    configs, feature_obs = generate_synthetic_observations(tree)
-
-    opt = tree.get_objective_function(feature_obs, optimize={'configs':True, 'twists':True, 'features':True})
-    test = opt.get_current_param_vector()
-    opt.error(test)
-
-    result = scipy.optimize.minimize(opt.error, test)
+    # configs, feature_obs = generate_synthetic_observations(tree)
     1/0
 
 if __name__ == '__main__':
