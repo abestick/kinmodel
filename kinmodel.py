@@ -550,7 +550,7 @@ class KinematicTree(object):
             manip_velocities[joint] = np.zeros((6,1))
             manip_velocities[joint][0:3, 0] = linear_vel
             manip_velocities[joint][3:6, 0] = rotational_vel
-        return manip_velocities
+        return manip_velocities # Each velocity is [linear, angular]
 
     def set_config(self, config, root=None):
         if root is None:
