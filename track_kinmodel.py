@@ -14,6 +14,11 @@ import json
 import kinmodel
 import ukf
 import matplotlib.pyplot as plt
+import rospy
+import sensor_msgs.msg as sensor_msgs
+from std_msgs.msg import Header
+import tf
+import tf.transformations
 
 
 FRAMERATE = 50
@@ -32,21 +37,16 @@ class KinematicTreeTracker(object):
 
         # Import ROS dependencies only if needed - can run w/o ROS otherwise
         if joint_states_topic is not None or object_tf_frame is not None:
-            import rospy
-            rospy_init_node('kin_tree_tracker')
+            rospy.init_node('kin_tree_tracker')
             if joint_states_topic is not None:
-                import sensor_msgs.msg as sensor_msgs
-                from std_msgs.msg import Header
                 self._joint_states_pub = rospy.Publisher(joint_states_topic, sensor_msgs.JointState,
                         queue_size=10)
             if object_tf_frame is not None:
-                import tf
-                import tf.transformations
-                self.tf_pub = tf.TransformBroadcaster()
+                self._tf_pub = tf.TransformBroadcaster()
 
     def start(self):
         self.exit = False
-        reader_thread = Thread(target=self.run)
+        reader_thread = threading.Thread(target=self.run)
         reader_thread.start()
 
     def stop(self):
@@ -89,19 +89,20 @@ class KinematicTreeTracker(object):
                         np.concatenate((frame[marker_idx,:,0], np.ones(1))))
                 feature_dict['mocap_' + str(marker_idx)] = obs_point
             if i == 0:
-                print('Initializing UKF...', end='')
                 sys.stdout.flush()
                 initial_obs = test_ss_model.vectorize_measurement(feature_dict)
                 uk_filter = ukf.UnscentedKalmanFilter(test_ss_model.process_model,
                         test_ss_model.measurement_model, np.zeros(2), np.identity(2)*0.25)
                 for i in range(50):
                     uk_filter.filter(initial_obs)
-                print('Done!')
             else:
                 # print('UKF Step: ' + str(i) + '/' + str(len(ukf_mocap)), end='\r')
                 # sys.stdout.flush()
                 obs_array = test_ss_model.vectorize_measurement(feature_dict)
                 joint_angles = uk_filter.filter(obs_array)[0]
+                if self._callback is not None:
+                    self._callback(i=i, joint_angles=joint_angles)
+
                 if self._return_array:
                     ukf_output.append(joint_angles)
 
@@ -112,36 +113,90 @@ class KinematicTreeTracker(object):
 
                 # Publish the base frame pose of the flexible object
                 if self._tf_pub is not None:
-                    homog = self.mocap_source.get_last_coordinates()
+                    homog = np_la.inv(self.mocap_source.get_last_coordinates())
                     mocap_frame_name = self.mocap_source.get_frame_name()
                     if mocap_frame_name is not None:
                         self._tf_pub.sendTransform(homog[0:3,3],
-                                tf.transformations.quaternion_from_matrix(homog[0:3,0:3]),
-                                rospy.Time.now(), "/object_base", mocap_frame_name)
+                                tf.transformations.quaternion_from_matrix(homog),
+                                rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
         if self._return_array:
             ukf_output = np.concatenate(ukf_output, axis=1)
             return ukf_output
+
+
+
+
 
 def main():
     plt.ion()
     parser = argparse.ArgumentParser()
     parser.add_argument('kinmodel_json_optimized', help='The kinematic model JSON file')
-    parser.add_argument('mocap_npz')
+    # parser.add_argument('mocap_npz')
     args = parser.parse_args()
 
     #Load the calibration sequence
-    calib_data = np.load(args.mocap_npz)
-    ukf_mocap = load_mocap.MocapArray(calib_data['full_sequence'][:,:,:], FRAMERATE)
+    # calib_data = np.load(args.mocap_npz)
+    # ukf_mocap = load_mocap.MocapArray(calib_data['full_sequence'][:,:,:], FRAMERATE)
 
     # Load the mocap stream
-    # ukf_mocap = load_mocap.PointCloudStream('/mocap_point_cloud')
+    ukf_mocap = load_mocap.PointCloudStream('/mocap_point_cloud')
+    tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
     kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
-    tracker = KinematicTreeTracker(kin_tree, ukf_mocap, return_array=True)
-    ukf_output = tracker.run()
+    #Set up the jacobian computation
+    joints = kin_tree.get_joints()
+    children2 = joints['joint2'].children
+    trans2 = np.zeros((3,))
+    for point in children2:
+        trans2 = trans2 + point.primitive.q().squeeze()
+    trans2 = trans2 / len(children2)
+    homog2 = np.identity(4)
+    homog2[0:3,3] = trans2
+    trans2 = kinmodel.Transform(homog_array=homog2)
+    children2.append(kinmodel.Feature('trans2', trans2))
 
-    plt.plot(ukf_output.T)
-    plt.pause(100)
+    children3 = joints['joint3'].children
+    trans3 = np.zeros((3,))
+    for point in children3:
+        trans3 = trans3 + point.primitive.q().squeeze()
+    trans3 = trans3 / len(children3)
+    homog3 = np.identity(4)
+    homog3[0:3,3] = trans3
+    trans3 = kinmodel.Transform(homog_array=homog3)
+    children3.append(kinmodel.Feature('trans3', trans3))
+
+    tf_pub = tf.TransformBroadcaster()
+
+    def new_frame_callback(i, joint_angles):
+        # print('Frame:' + str(i) + ', State:' + str(joint_angles.squeeze()), end='\r')
+        # sys.stdout.flush()
+        kin_tree.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
+        jacobian = kin_tree.compute_jacobian('trans2', 'trans3')
+        print(jacobian)
+        feature_obs = kin_tree.observe_features()
+
+        obs2 = feature_obs['trans2'].homog()
+        tf_pub.sendTransform(obs2[0:3,3],
+                                tf.transformations.quaternion_from_matrix(obs2),
+                                rospy.Time.now(), '/trans2', '/object_base')
+
+        obs3 = feature_obs['trans3'].homog()
+        tf_pub.sendTransform(obs3[0:3,3],
+                                tf.transformations.quaternion_from_matrix(obs3),
+                                rospy.Time.now(), '/trans3', '/object_base')
+
+
+
+    tracker = KinematicTreeTracker(tracker_kin_tree, ukf_mocap, joint_states_topic='/kinmodel_state',
+            object_tf_frame='/kinmodel_base', new_frame_callback=new_frame_callback)
+    # ukf_output = tracker.run()
+    tracker.start()
+    rospy.spin()
+    tracker.stop()
+
+
+    # plt.plot(ukf_output.T)
+    # plt.pause(100)
 
     
 if __name__ == '__main__':
