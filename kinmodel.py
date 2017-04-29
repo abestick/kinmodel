@@ -498,12 +498,12 @@ class KinematicTree(object):
         # feature in any of its child subtrees
         return None
 
-    def compute_jacobian(self, base_frame_name, manip_frame_name):
+    def compute_jacobian(self, base_frame_name, manip_frame_name, grasp_transform=None):
         # Compute the base to manip transform
         self._compute_pox()
         self._compute_dpox()
         feature_obs = self.observe_features()
-        base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name]
+        base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name] * grasp_transform
         root_base_transform = feature_obs[base_frame_name]
 
         # Get all the joints that connect the two frames along the shortest path
@@ -609,6 +609,7 @@ class KinematicTree(object):
                 self._compute_dpox(root=child_joint, parent_pox=root._pox)
 
     def observe_features(self, root=None, observations=None):
+        self._compute_pox()
         if root is None:
             root = self._root
         if observations is None:
