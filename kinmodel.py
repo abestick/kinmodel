@@ -479,6 +479,9 @@ class KinematicTree(object):
                 self._root = json.load(json_file, object_hook=obj_to_joint, encoding='utf-8')
         self._config = None
 
+        self._pox_stale = True
+        self._dpox_stale = True
+
     def json(self, filename=None):
         return self._root.json(filename, args={'separators':(',',': '), 'indent':4})
 
@@ -553,6 +556,8 @@ class KinematicTree(object):
         return manip_velocities # Each velocity is [linear, angular]
 
     def set_config(self, config, root=None):
+        self._pox_stale = True
+        self._dpox_stale = True
         if root is None:
             root = self._root
         if hasattr(root, 'children'):
@@ -580,33 +585,37 @@ class KinematicTree(object):
         return config
 
     def _compute_pox(self, root=None, parent_pox=None):
-        if root is None:
-            root = self._root
-        if parent_pox is None:
-            parent_pox = Transform()
-        try:
-            root._pox = parent_pox * root.twist.exp(root._theta)
-        except AttributeError:
-            # Root doesn't have a twist (joint is stationary), just copy the parent pox
-            root._pox = new_geometric_primitive(parent_pox)
-        if hasattr(root, 'children'):
-            for child_joint in root.children:
-                self._compute_pox(root=child_joint, parent_pox=root._pox)
+        if self._pox_stale:
+            self._pox_stale = False
+            if root is None:
+                root = self._root
+            if parent_pox is None:
+                parent_pox = Transform()
+            try:
+                root._pox = parent_pox * root.twist.exp(root._theta)
+            except AttributeError:
+                # Root doesn't have a twist (joint is stationary), just copy the parent pox
+                root._pox = new_geometric_primitive(parent_pox)
+            if hasattr(root, 'children'):
+                for child_joint in root.children:
+                    self._compute_pox(root=child_joint, parent_pox=root._pox)
 
     def _compute_dpox(self, root=None, parent_pox=None):
-        #Make sure to call _compute_pox() immediately before this method
-        if root is None:
-            root = self._root
-        if parent_pox is None:
-            parent_pox = Transform()
-        try:
-            root._dpox = Twist(xi=(parent_pox.adjoint().dot(root.twist.xi())))
-        except AttributeError:
-            # Root doesn't have a twist (joint is stationary)
-            pass
-        if hasattr(root, 'children'):
-            for child_joint in root.children:
-                self._compute_dpox(root=child_joint, parent_pox=root._pox)
+        if self._dpox_stale:
+            self._dpox_stale = False
+            self._compute_pox()
+            if root is None:
+                root = self._root
+            if parent_pox is None:
+                parent_pox = Transform()
+            try:
+                root._dpox = Twist(xi=(parent_pox.adjoint().dot(root.twist.xi())))
+            except AttributeError:
+                # Root doesn't have a twist (joint is stationary)
+                pass
+            if hasattr(root, 'children'):
+                for child_joint in root.children:
+                    self._compute_dpox(root=child_joint, parent_pox=root._pox)
 
     def observe_features(self, root=None, observations=None):
         self._compute_pox()
@@ -623,6 +632,8 @@ class KinematicTree(object):
         return observations
 
     def set_twists(self, twists, root=None):
+        self._pox_stale = True
+        self._dpox_stale = True
         if root is None:
             root = self._root
         try:
@@ -634,6 +645,7 @@ class KinematicTree(object):
                 self.set_twists(twists, root=child)
 
     def set_features(self, features, root=None):
+        self._pox_stale = True
         if root is None:
             root = self._root
         try:
