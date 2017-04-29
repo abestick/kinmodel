@@ -127,7 +127,85 @@ class KinematicTreeTracker(object):
 # observe_frames(): returns dict of transforms of all external frames (even TF ones)
 # compute_jacobian(base_frame_name, manip_frame_name): returns dict of twists
 
+class KinematicTreeExternalFrameTracker(object):
+    def __init__(self, kin_tree, base_tf_frame_name):
+        self._kin_tree = kin_tree
+        self._base_frame_name = base_tf_frame_name
+        self._tf_pub_frame_names = [] # Frame names to publish on tf after an _update() call
+        self._attached_frame_names = [] # All attached static frames
+        self._attached_tf_frame_names = [] # All attached tf frames - update during an _update() call
+        self._tf_pub = tf.TransformBroadcaster()
+        self._tf_listener = tf.TransformListener()
+        self._frames_stale = True
 
+    def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
+        self._frames_stale = True
+        # Attach a static frame to the tree
+        joints = kin_tree.get_joints()
+        if pose is None:
+            # No pose specified, set to mean position of all other Point children of this joint
+            trans = np.zeros((3,))
+            for point in joints[joint_name].children:
+                trans = trans + point.primitive.q().squeeze()
+            trans = trans / len(joints[joint_name].children)
+            homog = np.identity(4)
+            homog[0:3,3] = trans
+        else:
+            # Attach the frame at the specified pose
+            homog = pose.squeeze()
+        new_feature = kinmodel.Feature(frame_name, kinmodel.Transform(homog_array=homog))
+        joints[joint_name].children.append(new_feature)
+        self._attached_frame_names.append(frame_name)
+        if tf_pub:
+            self._tf_pub_frame_names.append(frame_name)
+
+    def attach_tf_frame(self, joint_name, tf_frame_name):
+        self._frames_stale = True
+        joints = kin_tree.get_joints()
+        new_feature = kinmodel.Feature(tf_frame_name, kinmodel.Transform())
+        joints[joint_name].children.append(new_feature)
+        self._attached_tf_frame_names.append(tf_frame_name)
+
+    def set_config(self, joint_angles_dict):
+        self._frames_stale = True
+        self._kin_tree.set_config(joint_angles_dict)
+
+    def observe_frames(self, ):
+        self._update()
+        observations = self._kin_tree.observe_features()
+        external_frame_dict = {}
+        for frame_name in self._attached_frame_names:
+            external_frame_dict[frame_name] = observations[frame_name]
+        for frame_name in self._attached_tf_frame_names:
+            external_frame_dict[frame_name] = observations[frame_name]
+        return external_frame_dict
+
+    def compute_jacobian(self, base_frame_name, manip_name_frame):
+        self._update()
+        return self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame)
+
+    def _update(self):
+        if self._frames_stale:
+            self._frames_stale = False
+            # Update tf frame poses
+            for frame_name in self._attached_tf_frame_names:
+                new_features = {}
+                try:
+                    trans, rot = self._tf_listener.lookupTransform(self._base_frame_name, frame_name, rospy.Time(0))
+                    tf_transform = tf.transformations.quaternion_matrix(rot)
+                    tf_transform[0:3,3] = trans
+                    new_features[frame_name] = kinmodel.Transform(homog_array=tf_transform)
+                except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                    print('Lookup failed for TF frame: ' + frame_name)
+            self._kin_tree.set_features(new_features)
+
+            # Observe and publish specified static features
+            feature_obs = self._kin_tree.observe_features()
+            for frame_name in self._tf_pub_frame_names:
+                obs = feature_obs[frame_name].homog()
+                self._tf_pub.sendTransform(obs[0:3,3],
+                                        tf.transformations.quaternion_from_matrix(obs),
+                                        rospy.Time.now(), frame_name, self.base_frame_name)
 
 
 def main():
