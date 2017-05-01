@@ -501,12 +501,12 @@ class KinematicTree(object):
         # feature in any of its child subtrees
         return None
 
-    def compute_jacobian(self, base_frame_name, manip_frame_name, grasp_transform=None):
+    def compute_jacobian(self, base_frame_name, manip_frame_name):
         # Compute the base to manip transform
         self._compute_pox()
         self._compute_dpox()
         feature_obs = self.observe_features()
-        base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name] * grasp_transform
+        base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name]
         root_base_transform = feature_obs[base_frame_name]
 
         # Get all the joints that connect the two frames along the shortest path
@@ -585,7 +585,7 @@ class KinematicTree(object):
         return config
 
     def _compute_pox(self, root=None, parent_pox=None):
-        if self._pox_stale:
+        if self._pox_stale or (root is not None):
             self._pox_stale = False
             if root is None:
                 root = self._root
@@ -601,7 +601,7 @@ class KinematicTree(object):
                     self._compute_pox(root=child_joint, parent_pox=root._pox)
 
     def _compute_dpox(self, root=None, parent_pox=None):
-        if self._dpox_stale:
+        if self._dpox_stale or (root is not None):
             self._dpox_stale = False
             self._compute_pox()
             if root is None:
@@ -646,7 +646,7 @@ class KinematicTree(object):
             for child in root.children:
                 self.set_twists(twists, root=child, error_on_missing=error_on_missing)
 
-    def set_features(self, features, root=None, error_on_missing=True):
+    def set_features(self, features, root=None, error_on_missing=False):
         self._pox_stale = True
         if root is None:
             root = self._root
@@ -710,7 +710,9 @@ class KinematicTree(object):
         # error between each feature and its actual value (add an .error(other) method to primitives)
         feature_obs = self.observe_features()
         sum_squared_errors = 0
-        for feature in feature_obs:
+
+        # Ignore any feature not present in feature_obs_dict
+        for feature in feature_obs_dict:
             sum_squared_errors += feature_obs[feature].error(feature_obs_dict[feature]) ** 2
 
         # Visualize the residuals
@@ -760,7 +762,7 @@ class KinematicTree(object):
             optimize={'configs':True, 'twists':True, 'features':True}, print_info=True):
         # TODO: only do this for [0,0,0,1] features
         # Set the feature positions to those seen at the zero configuration
-        # self.set_features(feature_obs[0])
+        self.set_features(feature_obs[0])
 
         # Create an objective function to optimize
         opt = self.get_objective_function(feature_obs, optimize=optimize, config_dict_list=configs)
@@ -943,7 +945,10 @@ class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
             optimize={'configs':True, 'twists':True, 'features':True}):
         self._tree = kinematic_tree
-        self._feature_obs = feature_obs_dict_list
+        if optimize['features'] and optimize['features'] is not True:
+            self._feature_obs = [{name:feature_obs[name] for name in optimize['features']} for feature_obs in feature_obs_dict_list]
+        else:
+            self._feature_obs = feature_obs_dict_list
         if config_dict_list is None:
             twists = self._tree.get_twists()
 
@@ -1053,8 +1058,8 @@ def main():
     j0.children.append(j2)
     j1.children.append(ft1)
     j2.children.append(ft2)
-    j1.children.append(trans1)
-    j2.children.append(trans2)
+    # j1.children.append(trans1)
+    # j2.children.append(trans2)
 
     tree = KinematicTree(j0)
 
@@ -1065,9 +1070,11 @@ def main():
     test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
 
     tree.set_config({'joint1':0.0, 'joint2':pi/2})
-    tree.compute_jacobian('A', 'B')
+    # tree.compute_jacobian('A', 'B')
 
-    # configs, feature_obs = generate_synthetic_observations(tree)
+    configs, feature_obs = generate_synthetic_observations(tree, 20)
+    final_configs, final_twists, final_features = tree.fit_params(feature_obs, configs=None, 
+            optimize={'configs':True, 'twists':True, 'features':True})
     1/0
 
 if __name__ == '__main__':
