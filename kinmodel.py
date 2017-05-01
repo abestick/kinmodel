@@ -555,7 +555,7 @@ class KinematicTree(object):
             manip_velocities[joint][3:6, 0] = rotational_vel
         return manip_velocities # Each velocity is [linear, angular]
 
-    def set_config(self, config, root=None):
+    def set_config(self, config, root=None, error_on_missing=True):
         self._pox_stale = True
         self._dpox_stale = True
         if root is None:
@@ -564,10 +564,10 @@ class KinematicTree(object):
             try:
                 root._theta = config[root.name]
             except KeyError:
-                if root.twist is not None:
+                if root.twist is not None and error_on_missing:
                     raise ValueError('Config dict is missing an entry for joint: ' + root.name)
             for child_joint in root.children:
-                self.set_config(config, root=child_joint)
+                self.set_config(config, root=child_joint, error_on_missing=error_on_missing)
 
     def get_config(self, root=None, config=None):
         if root is None:
@@ -631,30 +631,34 @@ class KinematicTree(object):
             observations[root.name] = root._pox * root.primitive
         return observations
 
-    def set_twists(self, twists, root=None):
+    def set_twists(self, twists, root=None, error_on_missing=True):
         self._pox_stale = True
         self._dpox_stale = True
         if root is None:
             root = self._root
-        try:
-            root.twist = twists[root.name]
-        except KeyError:
-            pass
+        if hasattr(root, 'twist') and root.twist is not None:
+            try:
+                root.twist = twists[root.name]
+            except KeyError:
+                if error_on_missing:
+                    raise ValueError('Twist dict is missing an entry for joint: ' + root.name)
         if hasattr(root, 'children'):
             for child in root.children:
-                self.set_twists(twists, root=child)
+                self.set_twists(twists, root=child, error_on_missing=error_on_missing)
 
-    def set_features(self, features, root=None):
+    def set_features(self, features, root=None, error_on_missing=True):
         self._pox_stale = True
         if root is None:
             root = self._root
-        try:
-            root.primitive = features[root.name]
-        except KeyError:
-            pass
+        if hasattr(root, 'primitive'):
+            try:
+                root.primitive = features[root.name]
+            except KeyError:
+                if error_on_missing:
+                    raise ValueError('Feature dict is missing an entry for feature: ' + root.name)
         if hasattr(root, 'children'):
             for child in root.children:
-                self.set_features(features, root=child)
+                self.set_features(features, root=child, error_on_missing=error_on_missing)
 
     def get_twists(self, root=None, twists=None):
         if root is None:
@@ -957,14 +961,23 @@ class KinematicTreeObjectiveFunction(object):
         # Pull params from KinematicTree and pass to vectorize
         if self._optimize['twists']:
             twists = self._tree.get_twists()
+            if self._optimize['twists'] is not True:
+                # Select only the specified twists to optimize if a list of names is given
+                twists = {name:twists[name] for name in self._optimize['twists']}
         else:
             twists = None
         if self._optimize['features']:
             features = self._tree.get_features()
+            if self._optimize['features'] is not True:
+                # Select only the specified features to optimize if a list of names is given
+                features = {name:features[name] for name in self._optimize['features']}
         else:
             features = None
         if self._optimize['configs']:
             configs = self._config_dict_list[1:]
+            if self._optimize['configs'] is not True:
+                # Select only the specified configs to optimize if a list of names is given
+                configs = [{name:config_dict[name] for name in self._optimize['configs']} for config_dict in configs]
         else:
             configs = None
 
