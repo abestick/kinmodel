@@ -25,13 +25,12 @@ GROUP_NAME = 'tree'
 
 class KinematicTreeTracker(object):
     def __init__(self, kin_tree, mocap_source, joint_states_topic=None, object_tf_frame=None,
-            new_frame_callback=None, return_array=False):
+            new_frame_callback=None):
         self.kin_tree = kin_tree
         self.mocap_source = mocap_source
         self._joint_states_pub = None
         self._tf_pub = None
         self._callback = new_frame_callback
-        self._return_array = return_array
         self.exit = False
 
         if joint_states_topic is not None:
@@ -99,9 +98,6 @@ class KinematicTreeTracker(object):
                 if self._callback is not None:
                     self._callback(i=i, joint_angles=joint_angles)
 
-                if self._return_array:
-                    ukf_output.append(joint_angles)
-
                 if self._joint_states_pub is not None:
                     msg = sensor_msgs.JointState(position=joint_angles.squeeze(),
                             header=Header(stamp=rospy.Time.now()))
@@ -115,9 +111,6 @@ class KinematicTreeTracker(object):
                         self._tf_pub.sendTransform(homog[0:3,3],
                                 tf.transformations.quaternion_from_matrix(homog),
                                 rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
-        if self._return_array:
-            ukf_output = np.concatenate(ukf_output, axis=1)
-            return ukf_output
 
 # KinematicTreeExternalFrameTracker
 #__init__(kin_tree, base_tf_frame_name)
