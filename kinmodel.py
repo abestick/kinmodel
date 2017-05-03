@@ -479,6 +479,9 @@ class KinematicTree(object):
                 self._root = json.load(json_file, object_hook=obj_to_joint, encoding='utf-8')
         self._config = None
 
+        self._pox_stale = True
+        self._dpox_stale = True
+
     def json(self, filename=None):
         return self._root.json(filename, args={'separators':(',',': '), 'indent':4})
 
@@ -552,17 +555,19 @@ class KinematicTree(object):
             manip_velocities[joint][3:6, 0] = rotational_vel
         return manip_velocities # Each velocity is [linear, angular]
 
-    def set_config(self, config, root=None):
+    def set_config(self, config, root=None, error_on_missing=True):
+        self._pox_stale = True
+        self._dpox_stale = True
         if root is None:
             root = self._root
         if hasattr(root, 'children'):
             try:
                 root._theta = config[root.name]
             except KeyError:
-                if root.twist is not None:
+                if root.twist is not None and error_on_missing:
                     raise ValueError('Config dict is missing an entry for joint: ' + root.name)
             for child_joint in root.children:
-                self.set_config(config, root=child_joint)
+                self.set_config(config, root=child_joint, error_on_missing=error_on_missing)
 
     def get_config(self, root=None, config=None):
         if root is None:
@@ -580,35 +585,40 @@ class KinematicTree(object):
         return config
 
     def _compute_pox(self, root=None, parent_pox=None):
-        if root is None:
-            root = self._root
-        if parent_pox is None:
-            parent_pox = Transform()
-        try:
-            root._pox = parent_pox * root.twist.exp(root._theta)
-        except AttributeError:
-            # Root doesn't have a twist (joint is stationary), just copy the parent pox
-            root._pox = new_geometric_primitive(parent_pox)
-        if hasattr(root, 'children'):
-            for child_joint in root.children:
-                self._compute_pox(root=child_joint, parent_pox=root._pox)
+        if self._pox_stale or (root is not None):
+            self._pox_stale = False
+            if root is None:
+                root = self._root
+            if parent_pox is None:
+                parent_pox = Transform()
+            try:
+                root._pox = parent_pox * root.twist.exp(root._theta)
+            except AttributeError:
+                # Root doesn't have a twist (joint is stationary), just copy the parent pox
+                root._pox = new_geometric_primitive(parent_pox)
+            if hasattr(root, 'children'):
+                for child_joint in root.children:
+                    self._compute_pox(root=child_joint, parent_pox=root._pox)
 
     def _compute_dpox(self, root=None, parent_pox=None):
-        #Make sure to call _compute_pox() immediately before this method
-        if root is None:
-            root = self._root
-        if parent_pox is None:
-            parent_pox = Transform()
-        try:
-            root._dpox = Twist(xi=(parent_pox.adjoint().dot(root.twist.xi())))
-        except AttributeError:
-            # Root doesn't have a twist (joint is stationary)
-            pass
-        if hasattr(root, 'children'):
-            for child_joint in root.children:
-                self._compute_dpox(root=child_joint, parent_pox=root._pox)
+        if self._dpox_stale or (root is not None):
+            self._dpox_stale = False
+            self._compute_pox()
+            if root is None:
+                root = self._root
+            if parent_pox is None:
+                parent_pox = Transform()
+            try:
+                root._dpox = Twist(xi=(parent_pox.adjoint().dot(root.twist.xi())))
+            except AttributeError:
+                # Root doesn't have a twist (joint is stationary)
+                pass
+            if hasattr(root, 'children'):
+                for child_joint in root.children:
+                    self._compute_dpox(root=child_joint, parent_pox=root._pox)
 
     def observe_features(self, root=None, observations=None):
+        self._compute_pox()
         if root is None:
             root = self._root
         if observations is None:
@@ -621,27 +631,34 @@ class KinematicTree(object):
             observations[root.name] = root._pox * root.primitive
         return observations
 
-    def set_twists(self, twists, root=None):
+    def set_twists(self, twists, root=None, error_on_missing=True):
+        self._pox_stale = True
+        self._dpox_stale = True
         if root is None:
             root = self._root
-        try:
-            root.twist = twists[root.name]
-        except KeyError:
-            pass
+        if hasattr(root, 'twist') and root.twist is not None:
+            try:
+                root.twist = twists[root.name]
+            except KeyError:
+                if error_on_missing:
+                    raise ValueError('Twist dict is missing an entry for joint: ' + root.name)
         if hasattr(root, 'children'):
             for child in root.children:
-                self.set_twists(twists, root=child)
+                self.set_twists(twists, root=child, error_on_missing=error_on_missing)
 
-    def set_features(self, features, root=None):
+    def set_features(self, features, root=None, error_on_missing=False):
+        self._pox_stale = True
         if root is None:
             root = self._root
-        try:
-            root.primitive = features[root.name]
-        except KeyError:
-            pass
+        if hasattr(root, 'primitive'):
+            try:
+                root.primitive = features[root.name]
+            except KeyError:
+                if error_on_missing:
+                    raise ValueError('Feature dict is missing an entry for feature: ' + root.name)
         if hasattr(root, 'children'):
             for child in root.children:
-                self.set_features(features, root=child)
+                self.set_features(features, root=child, error_on_missing=error_on_missing)
 
     def get_twists(self, root=None, twists=None):
         if root is None:
@@ -693,7 +710,9 @@ class KinematicTree(object):
         # error between each feature and its actual value (add an .error(other) method to primitives)
         feature_obs = self.observe_features()
         sum_squared_errors = 0
-        for feature in feature_obs:
+
+        # Ignore any feature not present in feature_obs_dict
+        for feature in feature_obs_dict:
             sum_squared_errors += feature_obs[feature].error(feature_obs_dict[feature]) ** 2
 
         # Visualize the residuals
@@ -743,7 +762,7 @@ class KinematicTree(object):
             optimize={'configs':True, 'twists':True, 'features':True}, print_info=True):
         # TODO: only do this for [0,0,0,1] features
         # Set the feature positions to those seen at the zero configuration
-        # self.set_features(feature_obs[0])
+        self.set_features(feature_obs[0])
 
         # Create an objective function to optimize
         opt = self.get_objective_function(feature_obs, optimize=optimize, config_dict_list=configs)
@@ -926,7 +945,10 @@ class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
             optimize={'configs':True, 'twists':True, 'features':True}):
         self._tree = kinematic_tree
-        self._feature_obs = feature_obs_dict_list
+        if optimize['features'] and optimize['features'] is not True:
+            self._feature_obs = [{name:feature_obs[name] for name in optimize['features']} for feature_obs in feature_obs_dict_list]
+        else:
+            self._feature_obs = feature_obs_dict_list
         if config_dict_list is None:
             twists = self._tree.get_twists()
 
@@ -944,14 +966,23 @@ class KinematicTreeObjectiveFunction(object):
         # Pull params from KinematicTree and pass to vectorize
         if self._optimize['twists']:
             twists = self._tree.get_twists()
+            if self._optimize['twists'] is not True:
+                # Select only the specified twists to optimize if a list of names is given
+                twists = {name:twists[name] for name in self._optimize['twists']}
         else:
             twists = None
         if self._optimize['features']:
             features = self._tree.get_features()
+            if self._optimize['features'] is not True:
+                # Select only the specified features to optimize if a list of names is given
+                features = {name:features[name] for name in self._optimize['features']}
         else:
             features = None
         if self._optimize['configs']:
             configs = self._config_dict_list[1:]
+            if self._optimize['configs'] is not True:
+                # Select only the specified configs to optimize if a list of names is given
+                configs = [{name:config_dict[name] for name in self._optimize['configs']} for config_dict in configs]
         else:
             configs = None
 
@@ -1027,8 +1058,8 @@ def main():
     j0.children.append(j2)
     j1.children.append(ft1)
     j2.children.append(ft2)
-    j1.children.append(trans1)
-    j2.children.append(trans2)
+    # j1.children.append(trans1)
+    # j2.children.append(trans2)
 
     tree = KinematicTree(j0)
 
@@ -1039,9 +1070,11 @@ def main():
     test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
 
     tree.set_config({'joint1':0.0, 'joint2':pi/2})
-    tree.compute_jacobian('A', 'B')
+    # tree.compute_jacobian('A', 'B')
 
-    # configs, feature_obs = generate_synthetic_observations(tree)
+    configs, feature_obs = generate_synthetic_observations(tree, 20)
+    final_configs, final_twists, final_features = tree.fit_params(feature_obs, configs=None, 
+            optimize={'configs':True, 'twists':True, 'features':True})
     1/0
 
 if __name__ == '__main__':

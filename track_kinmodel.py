@@ -112,15 +112,95 @@ class KinematicTreeTracker(object):
                                 tf.transformations.quaternion_from_matrix(homog),
                                 rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
 
-# KinematicTreeExternalFrameTracker
-#__init__(kin_tree, base_tf_frame_name)
-# attach_frame(joint_name, frame_name, tf_pub=True, pose=None): Defaults to origin at mean position of all points on joint
-# attach_tf_frame(joint_name, frame_name, tf_frame_name): Attaches frame and adds frame to update list
-# set_config(joint_angles_dict)
-# observe_frames(): returns dict of transforms of all external frames (even TF ones)
-# compute_jacobian(base_frame_name, manip_frame_name): returns dict of twists
 
+class KinematicTreeExternalFrameTracker(object):
+    def __init__(self, kin_tree, base_tf_frame_name):
+        self._kin_tree = kin_tree
+        self._base_frame_name = base_tf_frame_name
+        self._tf_pub_frame_names = [] # Frame names to publish on tf after an _update() call
+        self._attached_frame_names = [] # All attached static frames
+        self._attached_tf_frame_names = [] # All attached tf frames - update during an _update() call
+        self._tf_pub = tf.TransformBroadcaster()
+        self._tf_listener = tf.TransformListener()
 
+    def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
+        # Attach a static frame to the tree
+        joints = self._kin_tree.get_joints()
+        if pose is None:
+            # No pose specified, set to mean position of all other Point children of this joint
+            trans = np.zeros((3,))
+            num_points = 0
+            for point in joints[joint_name].children:
+                try:
+                    trans = trans + point.primitive.q().squeeze()
+                    num_points += 1
+                except AttributeError:
+                    pass # This feature isn't a Point
+            trans = trans / num_points
+            homog = np.identity(4)
+            homog[0:3,3] = trans
+        else:
+            # Attach the frame at the specified pose
+            homog = pose.squeeze()
+        new_feature = kinmodel.Feature(frame_name, kinmodel.Transform(homog_array=homog))
+        joints[joint_name].children.append(new_feature)
+        self._attached_frame_names.append(frame_name)
+        if tf_pub:
+            self._tf_pub_frame_names.append(frame_name)
+
+    def attach_tf_frame(self, joint_name, tf_frame_name):
+        # Attach reference frame to specified joint
+        self.attach_frame(joint_name, '_tf_ref_' + tf_frame_name, tf_pub=True)
+
+        # Attach tf frame
+        joints = self._kin_tree.get_joints()
+        new_feature = kinmodel.Feature(tf_frame_name, kinmodel.Transform())
+        joints[joint_name].children.append(new_feature)
+        self._attached_tf_frame_names.append(tf_frame_name)
+
+    def set_config(self, joint_angles_dict):
+        self._kin_tree.set_config(joint_angles_dict)
+
+    def observe_frames(self):
+        self._update()
+        observations = self._kin_tree.observe_features()
+        external_frame_dict = {}
+        for frame_name in self._attached_frame_names:
+            external_frame_dict[frame_name] = observations[frame_name]
+        for frame_name in self._attached_tf_frame_names:
+            external_frame_dict[frame_name] = observations[frame_name]
+        return external_frame_dict
+
+    def compute_jacobian(self, base_frame_name, manip_name_frame):
+        self._update()
+        return self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame)
+
+    def _update(self):
+        # Get the current and zero-config feature observations
+        feature_obs = self._kin_tree.observe_features()
+        all_features = self._kin_tree.get_features()
+
+        # Update tf frame poses
+        updated_features = {}
+        for frame_name in self._attached_tf_frame_names:
+            try:
+                trans, rot = self._tf_listener.lookupTransform(self._base_frame_name, frame_name, rospy.Time(0))
+                tf_transform = tf.transformations.quaternion_matrix(rot)
+                tf_transform[0:3,3] = trans
+                base_robot_trans = kinmodel.Transform(homog_array=tf_transform)
+                base_reference_trans = feature_obs['_tf_ref_' + frame_name]
+                base_reference_zero_config = all_features['_tf_ref_' + frame_name]
+                updated_features[frame_name] = base_reference_zero_config * (base_reference_trans.inv() * base_robot_trans)
+            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                print('Lookup failed for TF frame: ' + frame_name)
+        self._kin_tree.set_features(updated_features)
+
+        # Observe and publish specified static features
+        for frame_name in self._tf_pub_frame_names:
+            obs = feature_obs[frame_name].homog()
+            self._tf_pub.sendTransform(obs[0:3,3],
+                                    tf.transformations.quaternion_from_matrix(obs),
+                                    rospy.Time.now(), frame_name, self._base_frame_name)
 
 
 def main():
@@ -140,57 +220,21 @@ def main():
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
     kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
-    #Set up the jacobian computation
-    joints = kin_tree.get_joints()
-    children2 = joints['joint2'].children
-    trans2 = np.zeros((3,))
-    for point in children2:
-        trans2 = trans2 + point.primitive.q().squeeze()
-    trans2 = trans2 / len(children2)
-    homog2 = np.identity(4)
-    homog2[0:3,3] = trans2
-    trans2 = kinmodel.Transform(homog_array=homog2)
-    children2.append(kinmodel.Feature('trans2', trans2))
 
-    children3 = joints['joint3'].children
-    trans3 = np.zeros((3,))
-    for point in children3:
-        trans3 = trans3 + point.primitive.q().squeeze()
-    trans3 = trans3 / len(children3)
-    homog3 = np.identity(4)
-    homog3[0:3,3] = trans3
-    trans3 = kinmodel.Transform(homog_array=homog3)
-    children3.append(kinmodel.Feature('trans3', trans3))
-
-    tf_pub = tf.TransformBroadcaster()
-    tf_listener = tf.TransformListener()
+    # Add the external frames to track
+    frame_tracker = KinematicTreeExternalFrameTracker(kin_tree, 'object_base')
+    frame_tracker.attach_frame('joint2', 'trans2')
+    frame_tracker.attach_frame('joint3', 'trans3')
+    frame_tracker.attach_tf_frame('joint3', 'left_hand')
+    frame_tracker.attach_tf_frame('joint2', 'base')
 
     def new_frame_callback(i, joint_angles):
-        # print('Frame:' + str(i) + ', State:' + str(joint_angles.squeeze()), end='\r')
-        # sys.stdout.flush()
-        (trans,rot) = tf_listener.lookupTransform('/object_base', '/left_hand', rospy.Time(0))
-        trans3_homog = tf.transformations.quaternion_matrix(rot)
-        trans3_homog[0:3,3] = trans
-        kin_tree.set_features({'trans3':Transform(homog_array=trans3_homog)})
-        kin_tree.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
-        jacobian = kin_tree.compute_jacobian('trans2', 'trans3')
-        print(jacobian)
-        feature_obs = kin_tree.observe_features()
-
-        obs2 = feature_obs['trans2'].homog()
-        tf_pub.sendTransform(obs2[0:3,3],
-                                tf.transformations.quaternion_from_matrix(obs2),
-                                rospy.Time.now(), '/trans2', '/object_base')
-
-        obs3 = feature_obs['trans3'].homog()
-        tf_pub.sendTransform(obs3[0:3,3],
-                                tf.transformations.quaternion_from_matrix(obs3),
-                                rospy.Time.now(), '/trans3', '/object_base')
-
+        frame_tracker.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
+        print(frame_tracker.compute_jacobian('base', 'left_hand'))
 
 
     tracker = KinematicTreeTracker(tracker_kin_tree, ukf_mocap, joint_states_topic='/kinmodel_state',
-            object_tf_frame='/kinmodel_base', new_frame_callback=new_frame_callback)
+            object_tf_frame='/object_base', new_frame_callback=new_frame_callback)
     # ukf_output = tracker.run()
     tracker.start()
     rospy.spin()
