@@ -182,6 +182,12 @@ class KinematicTreeExternalFrameTracker(object):
         self._update()
         return self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame)
 
+    def compute_jacobian_matrix(order=None):
+        if order is None:
+            order = ['joint2', 'joint3']
+        jac_dict = self.compute_jacobian('base', 'left_hand')
+        return np.concatenate([jac_dict[joint_col] for joint_col in order], axis=1)
+
     def _update(self):
         # Get the current and zero-config feature observations
         feature_obs = self._kin_tree.observe_features()
