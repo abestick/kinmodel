@@ -15,26 +15,12 @@ import tf.transformations as convert
 import uuid
 import kinmodel
 
-parser = argparse.ArgumentParser()
-parser.add_argument('kinmodel_json', help='The JSON file with the kinematic model data')
-parser.add_argument('output_npz', help='The output mocap data file')
-args = parser.parse_args()
-
-# Generate chains from the kinematic model file
-kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json)
-features = kin_tree.get_features()
-tree_marker_nums = []
-assignments = {}
-for feature_name in features:
-    assignments[feature_name] = int(feature_name.split('_')[1])
-
-CHAINS = {}
-CHAINS['tree'] = assignments.keys()
 
 class MocapRecorder():
     def __init__(self, max_length=57600):
         self._frames = deque()
         self._annotations = []
+        self._times = np.array([])
         self._record = False
         self._current_frame = -1
         self._max_length = max_length
@@ -56,6 +42,7 @@ class MocapRecorder():
         if self._record:
             frame = point_cloud_to_array(message)
             self._frames.append(frame)
+            self._times = np.append(self._times, rospy.Time.now().to_sec())
             self._current_frame += 1
             if self._annotate_when_visible is not None:
                 if not np.any(np.isnan(frame[self._annotate_when_visible[0],:,0])):
@@ -86,6 +73,70 @@ class MocapRecorder():
         self.stop()
         self._sub.unregister()
 
+    def clear(self):
+        self._frames = deque()
+        self._annotations = []
+        self._times = np.array([])
+
+    def duration_record(self, duration, countdown=0.0, zero_start_time=False):
+        self.stop()
+        self.clear()
+        rospy.sleep(countdown)
+        self.record()
+        rospy.sleep(duration)
+        self.stop()
+        offset = self._times[0] if zero_start_time else 0.0
+        return self.get_array(), self._times - offset
+
+    def triggered_record(self, begin_message='Press ENTER to begin recording...',
+                         stop_message='Press ENTER to stop recording.',  zero_start_time=False):
+        self.stop()
+        self.clear()
+        raw_input(begin_message)
+        self.record()
+        raw_input(stop_message)
+        self.stop()
+        offset = self._times[0] if zero_start_time else 0.0
+        return self.get_array(), self._times - offset
+
+    def get_annotated_subset(self, annotations=None):
+        if annotations is None:
+            annotations = self._annotations
+
+        indices, labels = zip(annotations)
+
+        array = self.get_array()[:, :, indices]
+        times = self._times[indices]
+
+        return array, times, labels
+
+    def timed_duration_record(self, period, duration, countdown=0.0,  zero_start_time=False):
+        self.stop()
+        self.clear()
+        rospy.sleep(countdown)
+        self.record()
+        timer = rospy.Timer(rospy.Duration(period), self.annotate())
+        rospy.sleep(duration)
+        timer.shutdown()
+        self.stop()
+        array, times, labels = self.get_annotated_subset()
+        offset = times[0] if zero_start_time else 0.0
+        return self.get_array(), self._times - offset, labels
+
+    def timed_trigger_record(self, period, begin_message='Press ENTER to begin recording...',
+                             stop_message='Press ENTER to stop recording.',  zero_start_time=False):
+        self.stop()
+        self.clear()
+        raw_input(begin_message)
+        self.record()
+        timer = rospy.Timer(rospy.Duration(period), self.annotate())
+        raw_input(stop_message)
+        timer.shutdown()
+        self.stop()
+        array, times, labels = self.get_annotated_subset()
+        offset = times[0] if zero_start_time else 0.0
+        return self.get_array(), self._times - offset, labels
+
 
 def point_cloud_to_array(message):
     num_points = len(message.points)
@@ -93,6 +144,7 @@ def point_cloud_to_array(message):
     for i, point in enumerate(message.points):
         data[i,:,0] = [point.x, point.y, point.z]
     return data
+
 
 def get_closest_visible(data, index):
     print('Requested index: ' + str(index))
@@ -109,7 +161,24 @@ def get_closest_visible(data, index):
                 return data[:,:,index-i], index-i
         raise RuntimeError('Markers are occluded in every frame of data')
 
-def main():
+
+def collect_model_data():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('kinmodel_json', help='The JSON file with the kinematic model data')
+    parser.add_argument('output_npz', help='The output mocap data file')
+    args = parser.parse_args()
+
+    # Generate chains from the kinematic model file
+    kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json)
+    features = kin_tree.get_features()
+    tree_marker_nums = []
+    assignments = {}
+    for feature_name in features:
+        assignments[feature_name] = int(feature_name.split('_')[1])
+
+    CHAINS = {}
+    CHAINS['tree'] = assignments.keys()
+
     #Load the marker assignments and make a list of all markers
     all_markers = []
     for chain in CHAINS.keys():
@@ -182,8 +251,46 @@ def main():
         print('Calibration sequences saved to ' + args.output_npz)
 
 
+def collect_task_data():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('output_npz', help='The output mocap data file')
+    args = parser.parse_args()
+
+    #Start recording frames
+    rospy.init_node('mocap_record_task')
+    recorder = MocapRecorder()
+
+    all_markers = None #??
+
+    #Capture the start-config
+    raw_input('RECORDING: Press <Enter> to capture the start-configuration: ')
+    print('Waiting for all markers to be visible...')
+    recorder.record()
+    recorder.annotate_next_visible(all_markers, 'start_config')
+
+    #Capture the goal-config
+    raw_input('RECORDING: Press <Enter> to capture the goal-configuration: ')
+    print('Waiting for all markers to be visible...')
+    recorder.record()
+    recorder.annotate_next_visible(all_markers, 'goal_config')
+
+    start_goal = recorder.get_annotated_subset()
+
+    data_points, time = recorder.triggered_record(zero_start_time=True)
+
+    print('Record Complete!')
+    print('Duration: %f' % time[-1])
+    print('Total data points: %d' % len(time))
+    print('Average time step: %f' % np.diff(time).mean())
+
+    #Add the full sequence and the id of the marker assignments to the dataset,
+    #then write it to a file
+    with open(args.output_npz, 'w') as output_file:
+        np.savez_compressed(output_file, start_goal=start_goal, task_data=data_points, time=time)
+        print('Calibration sequences saved to ' + args.output_npz)
+
 if __name__ == '__main__':
     try:
-        main()
+        collect_model_data()
     except rospy.ROSInterruptException:
         pass
