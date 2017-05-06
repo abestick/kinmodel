@@ -501,6 +501,13 @@ class KinematicTree(object):
         # feature in any of its child subtrees
         return None
 
+    def compute_transform(self, base_frame_name, target_frame_name):
+        # Compute the base to manip transform
+        self._compute_pox()
+        self._compute_dpox()
+        feature_obs = self.observe_features()
+        return feature_obs[base_frame_name].inv() * feature_obs[target_frame_name]
+
     def compute_jacobian(self, base_frame_name, manip_frame_name):
         # Compute the base to manip transform
         self._compute_pox()
