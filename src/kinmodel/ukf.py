@@ -63,7 +63,7 @@ class UnscentedKalmanFilter(object):
         # Update the state mean and covariance values with the innovation
         self.x = process_mean[:,None] + kalman_gain.dot(error)[:,None]
         self.P = process_covar - kalman_gain.dot(meas_covar).dot(kalman_gain.T)
-        return self.x, self.P
+        return self.x, self.P, np.sum(error**2)
 
     def _plot_error(self, observation, meas_mean):
         observation = np.reshape(observation, (-1,3))
@@ -91,7 +91,7 @@ class UnscentedKalmanFilter(object):
         self.axes.set_zlabel('Z Label')
         self.axes.auto_scale_xyz([-0.5,0.5], [-0.5,0.5], [-0.5,0.5])
         plt.ion()
-        plt.pause(0.1)
+        plt.pause(0.01)
 
 def generate_sigma_pts(mean, covariance, alpha_squared=1.0e-3):
     # Make mean (N,)

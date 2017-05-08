@@ -703,12 +703,14 @@ class KinematicTree(object):
         return self._root
 
     def compute_error(self, config_dict, feature_obs_dict, vis=False):
+    	# Assumes that all features in feature_obs_dict will be found in the tree
         # Set configuration and compute pox, assuming config_dict maps joint names to float values
         self.set_config(config_dict)
         self._compute_pox()
 
         # Assuming feature_obs_dict maps feature names to geometric primitive objects, compute the
-        # error between each feature and its actual value (add an .error(other) method to primitives)
+        # error between each feature and its actual value
+        # TODO: Add an .error(other) method to primitives
         feature_obs = self.observe_features()
         sum_squared_errors = 0
 
