@@ -38,6 +38,11 @@ def main():
             # This is a feature
             base_indices.append(int(child.name.split('_')[1]))
 
+    # Get all the marker indices of interest
+    all_marker_indices = []
+    for feature_name in kin_tree.get_features():
+        all_marker_indices.append(int(feature_name.split('_')[1]))
+
     # Set the base frame coordinate transformation
     desired = ukf_mocap.read()[0][base_indices,:,0]
     desired = desired - np.mean(desired, axis=0)
@@ -52,7 +57,7 @@ def main():
     feature_obs = []
     for frame, timestamp in mocap:
         feature_dict = {}
-        for marker_idx in range(mocap.get_num_points()):
+        for marker_idx in all_marker_indices:
             if not np.isnan(frame[marker_idx,0,0]):
                 obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx,:,0], np.ones(1))))
                 feature_dict['mocap_' + str(marker_idx)] = obs_point
