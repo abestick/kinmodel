@@ -405,12 +405,12 @@ class KinematicCost(object):
         return self.jac_func(config)
 
 class KinematicConstraint(KinematicCost):
-    def __init__(self, tree, type, frame, value):
+    def __init__(self, tree, constraint_type, frame, value):
         #TODO: add orientation constraints
         KinematicCost.__init__(self, self._constraint_cost, 
                                self._constraint_jacobian)
         self.tree = tree #The KinematicTree referenced by this constraint
-        self.type = type #Constraint type
+        self.type = constraint_type #Constraint type
         self.frame = frame #Name of the constrained end effector frame
         self.value = value #Desired value of the constrained frame (type depends on self.type)
         #self.type=='position' -> self.value==Point, self.type=='orientation' -> self.value==Rotation

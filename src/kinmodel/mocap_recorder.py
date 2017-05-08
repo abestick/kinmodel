@@ -58,8 +58,9 @@ class MocapRecorder():
         else:
             self._annotations.append((self._current_frame, label))
 
-    def annotate_next_visible(self, marker_nums, label=None):
-        self._annotate_when_visible = (np.array(marker_nums), label)
+    def annotate_next_visible(self, marker_nums=None, label=None):
+        indices = np.array(marker_nums) if marker_nums is not None else slice(None)
+        self._annotate_when_visible = (indices, label)
         while self._annotate_when_visible is not None:
             time.sleep(0.05)
 
@@ -78,7 +79,8 @@ class MocapRecorder():
         self._annotations = []
         self._times = np.array([])
 
-    def duration_record(self, duration, countdown=0.0, zero_start_time=False):
+    def duration_record(self, duration, countdown=0.0, zero_start_time=False, marker_nums=None):
+        marker_nums = np.array(marker_nums) if marker_nums is not None else slice(None)
         self.stop()
         self.clear()
         rospy.sleep(countdown)
@@ -86,10 +88,12 @@ class MocapRecorder():
         rospy.sleep(duration)
         self.stop()
         offset = self._times[0] if zero_start_time else 0.0
-        return self.get_array(), self._times - offset
+        return self.get_array()[marker_nums, :, :], self._times - offset
 
     def triggered_record(self, begin_message='Press ENTER to begin recording...',
-                         stop_message='Press ENTER to stop recording.',  zero_start_time=False):
+                         stop_message='Press ENTER to stop recording.',  zero_start_time=False,
+                         marker_nums=None):
+        marker_nums = np.array(marker_nums) if marker_nums is not None else slice(None)
         self.stop()
         self.clear()
         raw_input(begin_message)
@@ -97,20 +101,22 @@ class MocapRecorder():
         raw_input(stop_message)
         self.stop()
         offset = self._times[0] if zero_start_time else 0.0
-        return self.get_array(), self._times - offset
+        return self.get_array()[marker_nums, :, :], self._times - offset
 
-    def get_annotated_subset(self, annotations=None):
+    def get_annotated_subset(self, marker_nums=None, annotations=None):
+        marker_nums = np.array(marker_nums) if marker_nums is not None else slice(None)
+
         if annotations is None:
             annotations = self._annotations
 
-        indices, labels = zip(annotations)
-
-        array = self.get_array()[:, :, indices]
-        times = self._times[indices]
+        indices, labels = zip(*annotations)
+        array = self.get_array()[:, :, indices][marker_nums, :, :]
+        times = self._times[indices,]
 
         return array, times, labels
 
-    def timed_duration_record(self, period, duration, countdown=0.0,  zero_start_time=False):
+    def timed_duration_record(self, period, duration, countdown=0.0,  zero_start_time=False,
+        marker_nums=None):
         self.stop()
         self.clear()
         rospy.sleep(countdown)
@@ -119,12 +125,13 @@ class MocapRecorder():
         rospy.sleep(duration)
         timer.shutdown()
         self.stop()
-        array, times, labels = self.get_annotated_subset()
+        array, times, labels = self.get_annotated_subset(marker_nums)
         offset = times[0] if zero_start_time else 0.0
-        return self.get_array(), self._times - offset, labels
+        return array, times - offset, labels
 
     def timed_trigger_record(self, period, begin_message='Press ENTER to begin recording...',
-                             stop_message='Press ENTER to stop recording.',  zero_start_time=False):
+                             stop_message='Press ENTER to stop recording.',  zero_start_time=False,
+                             marker_nums=None):
         self.stop()
         self.clear()
         raw_input(begin_message)
@@ -133,9 +140,16 @@ class MocapRecorder():
         raw_input(stop_message)
         timer.shutdown()
         self.stop()
-        array, times, labels = self.get_annotated_subset()
+        array, times, labels = self.get_annotated_subset(marker_nums)
         offset = times[0] if zero_start_time else 0.0
-        return self.get_array(), self._times - offset, labels
+        return array, times - offset, labels
+
+    def get_all_visible_indices(self):
+        while self._current_frame < 0:
+            rospy.sleep(0.05)
+        indices = np.where(~np.isnan(self._frames[self._current_frame][:,:,0]).any(axis=1))[0]
+        rospy.logdebug(indices)
+        return indices
 
 
 def point_cloud_to_array(message):
@@ -260,7 +274,12 @@ def collect_task_data():
     rospy.init_node('mocap_record_task')
     recorder = MocapRecorder()
 
-    all_markers = None #??
+    enough = False
+    recorder.record()
+    while not enough:
+        all_markers = recorder.get_all_visible_indices()
+        resp = raw_input("Found %d markers, is this enough? [y=YES, <ENTER>=NO]" % len(all_markers))
+        enough = resp == 'y'
 
     #Capture the start-config
     raw_input('RECORDING: Press <Enter> to capture the start-configuration: ')
@@ -274,7 +293,9 @@ def collect_task_data():
     recorder.record()
     recorder.annotate_next_visible(all_markers, 'goal_config')
 
-    start_goal = recorder.get_annotated_subset()
+    start_goal, _, _ = recorder.get_annotated_subset(all_markers)
+    start = start_goal[:, :, 0]
+    goal = start_goal[:, :, 1]
 
     data_points, time = recorder.triggered_record(zero_start_time=True)
 
@@ -286,8 +307,8 @@ def collect_task_data():
     #Add the full sequence and the id of the marker assignments to the dataset,
     #then write it to a file
     with open(args.output_npz, 'w') as output_file:
-        np.savez_compressed(output_file, start_goal=start_goal, task_data=data_points, time=time)
-        print('Calibration sequences saved to ' + args.output_npz)
+        np.savez_compressed(output_file, start=start, goal=goal, task_data=data_points, time=time, marker_nums=all_markers)
+        print('Task sequences saved to ' + args.output_npz)
 
 if __name__ == '__main__':
     try:
