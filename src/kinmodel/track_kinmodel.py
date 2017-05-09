@@ -19,6 +19,7 @@ import sensor_msgs.msg as sensor_msgs
 from std_msgs.msg import Header
 import tf
 import tf.transformations
+import math
 
 
 FRAMERATE = 50
@@ -26,12 +27,13 @@ GROUP_NAME = 'tree'
 
 class KinematicTreeTracker(object):
     def __init__(self, kin_tree, mocap_source, joint_states_topic=None, object_tf_frame=None,
-            new_frame_callback=None):
+            new_frame_callback=None, return_array=False):
         self.kin_tree = kin_tree
         self.mocap_source = mocap_source
         self._joint_states_pub = None
         self._tf_pub = None
         self._callback = new_frame_callback
+        self._return_array = return_array
         self.exit = False
 
         if joint_states_topic is not None:
@@ -43,8 +45,8 @@ class KinematicTreeTracker(object):
     def start(self):
         self.exit = False
         reader_thread = threading.Thread(target=self.run)
-        reader_thread.daemon = True
         reader_thread.start()
+        return reader_thread
 
     def stop(self):
         self.exit = True
@@ -72,13 +74,12 @@ class KinematicTreeTracker(object):
 
         # Find the number of movable joints (so we know the dimension of the state space)
         num_joints = len(self.kin_tree.get_twists())
-
+        
         # Create the observation and measurement models
         test_ss_model = kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
         measurement_dim = len(test_ss_model.measurement_model(np.zeros(num_joints)))
 
         # Run the filter
-        ukf_output = []
         for i, (frame, timestamp) in enumerate(self.mocap_source):
             if self.exit:
                 break
@@ -93,16 +94,17 @@ class KinematicTreeTracker(object):
                 uk_filter = ukf.UnscentedKalmanFilter(test_ss_model.process_model,
                         test_ss_model.measurement_model,
                         np.zeros(num_joints), # Initial state
-                        np.identity(num_joints)*0.25) # Initial error covariance
+                        np.identity(num_joints)*0.25, # Initial error covariance
+                        Q=math.pi/2/80, R=5e-3)
                 for i in range(50):
                     uk_filter.filter(initial_obs)
             else:
                 # print('UKF Step: ' + str(i) + '/' + str(len(ukf_mocap)), end='\r')
                 # sys.stdout.flush()
                 obs_array = test_ss_model.vectorize_measurement(feature_dict)
-                joint_angles = uk_filter.filter(obs_array)[0]
+                joint_angles, covariance, squared_residual = uk_filter.filter(obs_array, plot_error=False)
                 if self._callback is not None:
-                    self._callback(i=i, joint_angles=joint_angles)
+                    self._callback(i=i, joint_angles=joint_angles, covariance=covariance, squared_residual=squared_residual)
 
                 if self._joint_states_pub is not None:
                     msg = sensor_msgs.JointState(position=joint_angles.squeeze(),
@@ -239,19 +241,20 @@ def main():
     # Load the mocap stream
     ukf_mocap = load_mocap.PointCloudStream('/mocap_point_cloud')
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
-    kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
+    # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
 
     # Add the external frames to track
-    frame_tracker = KinematicTreeExternalFrameTracker(kin_tree, 'object_base')
-    frame_tracker.attach_frame('joint2', 'trans2')
-    frame_tracker.attach_frame('joint3', 'trans3')
-    frame_tracker.attach_tf_frame('joint3', 'left_hand')
-    frame_tracker.attach_tf_frame('joint2', 'base')
+    # frame_tracker = KinematicTreeExternalFrameTracker(kin_tree, 'object_base')
+    # frame_tracker.attach_frame('joint2', 'trans2')
+    # frame_tracker.attach_frame('joint3', 'trans3')
+    # frame_tracker.attach_tf_frame('joint3', 'left_hand')
+    # frame_tracker.attach_tf_frame('joint2', 'base')
 
-    def new_frame_callback(i, joint_angles):
-        frame_tracker.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
-        print(frame_tracker.compute_jacobian('base', 'left_hand'))
+    def new_frame_callback(i, joint_angles, covariance, squared_residual):
+        pass
+        # frame_tracker.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
+        # print(frame_tracker.compute_jacobian('base', 'left_hand'))
 
 
     tracker = KinematicTreeTracker(tracker_kin_tree, ukf_mocap, joint_states_topic='/kinmodel_state',

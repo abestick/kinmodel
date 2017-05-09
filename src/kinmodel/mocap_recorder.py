@@ -293,21 +293,34 @@ def collect_task_data():
     recorder.record()
     recorder.annotate_next_visible(all_markers, 'goal_config')
 
-    start_goal, _, _ = recorder.get_annotated_subset(all_markers)
+    start_goal, _, _ = recorder.get_annotated_subset()
     start = start_goal[:, :, 0]
     goal = start_goal[:, :, 1]
 
-    data_points, time = recorder.triggered_record(zero_start_time=True)
+    recordings = {}
+    time_base = 'time_'
+    base = 'full_sequence_'
+    index = 0
+    quit = False
 
-    print('Record Complete!')
-    print('Duration: %f' % time[-1])
-    print('Total data points: %d' % len(time))
-    print('Average time step: %f' % np.diff(time).mean())
+    while not quit:
+        data_points, time = recorder.triggered_record(zero_start_time=True)
+
+        print('Record Complete!')
+        print('Duration: %f' % time[-1])
+        print('Total data points: %d' % len(time))
+        print('Average time step: %f' % np.diff(time).mean())
+
+        recordings[base+str(index)] = data_points
+        recordings[time_base+str(index)] = time
+
+        quit = raw_input("Press q to quit or ENTER to record again: ") == 'q'
+        index += 1
 
     #Add the full sequence and the id of the marker assignments to the dataset,
     #then write it to a file
     with open(args.output_npz, 'w') as output_file:
-        np.savez_compressed(output_file, start=start, goal=goal, task_data=data_points, time=time, marker_nums=all_markers)
+        np.savez_compressed(output_file, start=start, goal=goal, marker_nums=all_markers, **recordings)
         print('Task sequences saved to ' + args.output_npz)
 
 if __name__ == '__main__':
