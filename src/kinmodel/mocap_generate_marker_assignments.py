@@ -73,8 +73,6 @@ def main():
     parser.add_argument('output_kinmodel_file', help='The output kinematic model')
     # parser.add_argument('mocap_file', help='The .npz file with the mocap sequence')
     args = parser.parse_args()
-                           
-
 
     # Load the kinematic tree, list all joints, and delete existing markers
     kin_tree = kinmodel.KinematicTree(json_filename=args.input_kinmodel_file)
@@ -94,14 +92,11 @@ def main():
 
     # # Iterate over each marker, ask for a joint assignment, and add a corresponding feature
 
-
-
-
     rospy.init_node('marker_assignments')
     assign = MarkerAssignments(kin_tree)
 
-    #Get the first mocap frame to determine how many markers there are
-    #Wait 30 seconds for the frame and quit if it isn't received
+    # Get the first mocap frame to determine how many markers there are
+    # Wait 30 seconds for the frame and quit if it isn't received
     num_markers = None
     for i in range(300):
         frame = assign.get_last_frame()
@@ -115,15 +110,15 @@ def main():
         print('Quitting now...')
         return
 
-    #Highlight each mocap point and ask the user for an assignment
+    # Highlight each mocap point and ask the user for an assignment
     for i in range(num_markers):
         assign.highlight_markers([i])
         group_name = raw_input('Enter a group name for marker ' + str(i) + ' or <Enter> to skip: ')
         if group_name.strip():
-            #If the string isn't empty, assign to a group
+            # If the string isn't empty, assign to a group
             assign.assign_marker(i, group_name)
 
-            #Display the current group members
+            # Display the current group members
             assign.highlight_group(group_name)
             raw_input('Displaying group ' + group_name + ' - Press <Enter> to continue...')
 

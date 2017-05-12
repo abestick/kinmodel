@@ -14,6 +14,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
+
 def new_geometric_primitive(input_data):
     homog_array = None
     #If the input is a GeometricPrimitive
@@ -31,7 +32,7 @@ def new_geometric_primitive(input_data):
     elif homog_array.shape == (4,) and homog_array[3] == 1:
         return Point(homog_array)
     elif homog_array.shape == (3,):
-        return Point()
+        return Point(np.append(homog_array, 1))
     elif homog_array.shape == (4,) and homog_array[3] == 0:
         return Vector(homog_array)
     elif homog_array.shape == (6,):
@@ -40,7 +41,26 @@ def new_geometric_primitive(input_data):
         raise TypeError('input_data must be array-like or a GeometricPrimitive')
 
 
-#Geometric primitives
+class StateSpaceModel(object):
+    __metaclass__ = ABCMeta
+
+    @abstractmethod
+    def process_model(self, state_vector):
+        pass
+
+    @abstractmethod
+    def measurement_model(self, state_vector):
+        pass
+
+    @abstractmethod
+    def vectorize_measurement(self, feature_obs):
+        pass
+
+    def state_length(self):
+        return self._state_length
+
+
+# Geometric primitives
 class GeometricPrimitive(object):
     __metaclass__ = ABCMeta
 
@@ -65,6 +85,7 @@ class GeometricPrimitive(object):
 
     def _json(self):
         return self.homog().squeeze().tolist()
+
 
 class Feature(object):
     """ j = Feature(...) a feature in a kinematic tree
@@ -93,7 +114,7 @@ class Feature(object):
 class Joint(object):
     """ j = Joint(...) a joint in a kinematic tree
 
-        .json(filename) - saves the kinematic tree to the specified file
+        .json(filename) - saves the kinematic tree to the specified file/home/pedge/catkin_ws/src
 
         .name - the name of this joint (must be unique in this tree)
         .children - list of other Joint objects
@@ -129,6 +150,7 @@ class Joint(object):
             except AttributeError:
                 pass
         return json_dict
+
 
 class Transform(GeometricPrimitive):
     """
@@ -234,6 +256,7 @@ class Twist(object):
     def _json(self):
         return self._xi.squeeze().tolist()
 
+
 class Rotation(GeometricPrimitive):
     """ R = Rotation(...)  element of SO(3)
 
@@ -316,6 +339,7 @@ class Point(GeometricPrimitive):
     def vectorize(self):
         return self._H[:3]
 
+
 def obj_to_joint(orig_obj):
     if 'children' in orig_obj:
         return Joint(**orig_obj)
@@ -323,6 +347,7 @@ def obj_to_joint(orig_obj):
         return Feature(**orig_obj)
     else:
         return orig_obj
+
 
 class IKSolver(object):
     """Contains the kinematic tree, cost functions, and constraints associated
@@ -405,6 +430,7 @@ class KinematicCost(object):
         #Takes a (N,) config and returns a (N,) gradient
         return self.jac_func(config)
 
+
 class KinematicConstraint(KinematicCost):
     def __init__(self, tree, constraint_type, frame, value):
         #TODO: add orientation constraints
@@ -447,6 +473,7 @@ class KinematicConstraint(KinematicCost):
             cost_jac = 2 * cur_trans.position().x() - 2 * self.value.x()
             return cost_jac.T.squeeze().dot(end_vel[3:,:])
 
+
 class QuadraticDisplacementCost(KinematicCost):
     """Kinematic cost which penalizes movement away from a neutral pose.
 
@@ -467,6 +494,7 @@ class QuadraticDisplacementCost(KinematicCost):
 
     def _jacobian(self, config):
         return 2 * config - 2 * self.neutral_pos
+
 
 class KinematicTree(object):
     # Specify only one of the three sources to load the tree from
@@ -805,6 +833,7 @@ class KinematicTree(object):
 
         return final_configs, final_twists, final_features
 
+
 class KinematicTreeParamVectorizer(object):
     def __init__(self):
         self._last_vectorized_sequence = None
@@ -901,7 +930,7 @@ class KinematicTreeParamVectorizer(object):
         return configs, twists, features
 
 
-class KinematicTreeStateSpaceModel(object):
+class KinematicTreeStateSpaceModel(StateSpaceModel):
     def __init__(self, tree):
         self._tree = tree
 
@@ -914,6 +943,7 @@ class KinematicTreeStateSpaceModel(object):
         # Initialize the measurement vectorizer to output only feature values
         self._meas_vectorizer = KinematicTreeParamVectorizer()
         self._meas_vectorizer.vectorize(features=self._tree.get_features())
+        self._state_length = len(initial_config)
 
     def measurement_model(self, state_vector):
         """Returns a vectorized observation of predicted feature poses given state=state_vector.
