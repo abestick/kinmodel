@@ -7,6 +7,21 @@ np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
 class UnscentedKalmanFilter(object):
     def __init__(self, proc_func, meas_func, x0, P0, Q=1e-1, R=1e-2):
+        """Create an Unscented Kalman Filter instance with the specified process/measurement
+        models and parameters.
+
+        Args:
+        proc_func - function handle: the process model function, which takes a single (N, k)
+            ndarray as an argument and returns a (N, k) ndarray of transformed state vectors
+        meas_func - function handle: the measurement model function, which takes a single (N, k)
+            ndarray as an argument and returns a (M, k) ndarray of predicted measurement vectors
+        x0 - (N, 1) ndarray: the initial state estimate of the system
+        P0 - (N, N) ndarray: the initial state error covariance of the system
+        Q - float: the additive process noise variance (assumed identical for each dimension)
+        R - float: the additive measurement noise variance (assumed identical for each dimension)
+
+        Note: N=state dimension, M=observation dimension
+        """
         self.meas_func = meas_func
         self.proc_func = proc_func
         self.x = x0.squeeze()[:,None]
@@ -17,9 +32,18 @@ class UnscentedKalmanFilter(object):
         self.R = R
 
     def filter(self, observation, plot_error=False):
-        """Runs a single step of the UKF and returns the current state mean and covariance
+        """Runs a single step of the UKF and returns the current state mean, covariance and sum of
+        squared errors
 
-        observation - (state_dim,) ndarray: the observation at the current time
+        Args:
+        observation - (meas_dim,) ndarray: the observation at the current time
+        plot_error - bool: whether to plot the observed and predicted measurements for each
+                frame (very slow right now)
+
+        Returns:
+        mean - (N,1) ndarray: the current state mean
+        covariance - (N,N) ndarray: the current state covariance
+        SSE - float: the sum of squared errors for this time step
         """
         # Generate a set of sigma points from x and P
         sigma_pts, mean_weights, covar_weights = generate_sigma_pts(self.x, self.P)
