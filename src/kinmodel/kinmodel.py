@@ -10,6 +10,7 @@ import json
 import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from phasespace.mocap_definitions import MocapWrist
 
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
@@ -979,6 +980,32 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
     def vectorize_measurement(self, feature_obs):
         return self._meas_vectorizer.vectorize(features=feature_obs)[:,None]
+
+
+class WristStateSpaceModel(StateSpaceModel, MocapWrist):
+    def __init__(self, marker_indices):
+        assert all(name in marker_indices for name in self.names), \
+            "marker_names must contain all these keys %s" % self.names
+
+        # Initialize the state vectorizer to output only config values
+        self._state_vectorizer = KinematicTreeParamVectorizer()
+        initial_config = {config: 0.0 for config in self.configs}
+        self._state_vectorizer.vectorize(initial_config)
+
+        # Initialize the measurement vectorizer to output only feature values
+        self._meas_vectorizer = KinematicTreeParamVectorizer()
+        initial_features = {feature: Point() for feature in self.names}
+        self._meas_vectorizer.vectorize(features=initial_features)
+        self._state_length = len(initial_config)
+
+    def measurement_model(self, state_vector):
+        pass
+
+    def process_model(self, state_vector):
+        return state_vector
+
+    def vectorize_measurement(self, feature_obs):
+        pass
 
         
 class KinematicTreeObjectiveFunction(object):

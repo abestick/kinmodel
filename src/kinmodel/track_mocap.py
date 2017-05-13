@@ -9,6 +9,7 @@ from std_msgs.msg import Header
 import ukf
 import kinmodel
 import numpy.linalg as npla
+from phasespace.mocap_definitions import MocapWrist
 
 
 class MocapTracker(object):
@@ -69,6 +70,10 @@ class MocapTracker(object):
                                            tf.transformations.quaternion_from_matrix(homog),
                                            rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
 
+    def _extract_observation(self, frame):
+        return {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :, 0]))
+                for name in self._marker_indices}
+
     def get_marker_indices(self, marker_names):
         return [self._marker_indices[name] for name in marker_names]
 
@@ -90,8 +95,7 @@ class MocapTracker(object):
             if self.exit:
                 break
 
-            self._observation = {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :, 0]))
-                                 for name in self._marker_indices}
+            self._observation = self._extract_observation(frame)
 
             observation_array = self.state_space_model.vectorize_measurement(self._observation)
 
@@ -236,16 +240,7 @@ class KinematicTreeExternalFrameTracker(object):
                                        rospy.Time.now(), frame_name, self._base_frame_name)
 
 
-class WristTracker(MocapTracker):
-    NUM_HAND = 4
-    NUM_WRIST = 1
-    NUM_ARM = 3
-
-    names = ["hand_%d"%h for h in range(NUM_HAND)] + \
-            ["wrist_%d"%w for w in range(NUM_WRIST)] + \
-            ["arm_%d"%a for a in range(NUM_ARM)]
-
-    groups = {'hand': names[0:NUM_HAND], 'wrist': names[NUM_HAND:NUM_HAND+NUM_ARM], 'arm': names[NUM_HAND+NUM_WRIST:]}
+class WristTracker(MocapTracker, MocapWrist):
 
     def __init__(self, mocap_source, marker_indices, reference_frame, joint_states_topic=None, object_tf_frame=None,
                  new_frame_callback=None):
@@ -264,9 +259,6 @@ class WristTracker(MocapTracker):
 
         super(WristTracker, self).__init__(mocap_source, state_space_model, base_markers, base_frame_points, marker_indices,
                                            joint_states_topic, object_tf_frame, new_frame_callback)
-
-    def get_marker_group(self, group):
-        return self.groups[group]
 
 
 def unit_vector(array):
