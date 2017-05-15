@@ -11,6 +11,7 @@ import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from phasespace.mocap_definitions import MocapWrist
+from tf.transformations import euler_matrix
 
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
@@ -40,6 +41,15 @@ def new_geometric_primitive(input_data):
         return Twist(omega=homog_array[0:3], nu=homog_array[3:6])
     else:
         raise TypeError('input_data must be array-like or a GeometricPrimitive')
+
+
+def stack(*args, **kwargs):
+    homog = kwargs.get('homog', True)
+
+    dims = slice(None) if homog else slice(None, 3)
+
+    return np.stack([arg.homog()[dims] for arg in args])
+
 
 
 class StateSpaceModel(object):
@@ -982,32 +992,72 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
         return self._meas_vectorizer.vectorize(features=feature_obs)[:,None]
 
 
-class WristStateSpaceModel(StateSpaceModel, MocapWrist):
-    def __init__(self, marker_indices):
-        assert all(name in marker_indices for name in self.names), \
-            "marker_names must contain all these keys %s" % self.names
+class WristStateSpaceModel2(StateSpaceModel, MocapWrist):
+    def __init__(self, reference_features):
+
+        assert all(feature in reference_features for feature in self.names), \
+            "reference_frames must contain all these keys %s" % self.names
+
+        self.reference_features = reference_features
 
         # Initialize the state vectorizer to output only config values
+        # We extend our state vector to include the translation we don't care about but need for predicting measurements
+        translation_configs = ['x', 'y', 'z']
         self._state_vectorizer = KinematicTreeParamVectorizer()
-        initial_config = {config: 0.0 for config in self.configs}
-        self._state_vectorizer.vectorize(initial_config)
+        initial_config = {config: 0.0 for config in self.configs + translation_configs}
+        self._state_vectorizer.vectorize([initial_config])
 
         # Initialize the measurement vectorizer to output only feature values
         self._meas_vectorizer = KinematicTreeParamVectorizer()
-        initial_features = {feature: Point() for feature in self.names}
+        initial_features = {feature: Point() for feature in self.reference_features}
         self._meas_vectorizer.vectorize(features=initial_features)
         self._state_length = len(initial_config)
 
+    def _state_vector_to_transform(self, state_vector):
+        configs = self._state_vectorizer.unvectorize(state_vector)[0]
+        homog = np.zeros((4,4))
+        homog[4, 4] = 1
+        homog[:3, :3] = euler_matrix(configs['roll'], configs['pitch'], configs['yaw'])
+        homog[:3, 3] = np.array([configs['x'], configs['y'], configs['z']])
+        return Transform(homog)
+
     def measurement_model(self, state_vector):
-        pass
+        transform = self._configs_to_transform(state_vector)
+        meas_features = {feature: transform*self.reference_features[feature] for feature in self.names}
+        return self._meas_vectorizer.vectorize(meas_features)
 
     def process_model(self, state_vector):
         return state_vector
 
     def vectorize_measurement(self, feature_obs):
-        pass
+        self._meas_vectorizer.vectorize(feature_obs)
 
-        
+
+class WristStateSpaceModel(StateSpaceModel, MocapWrist):
+    def __init__(self):
+
+        # Initialize the state vectorizer to output only config values
+        # We extend our state vector to include the translation we don't care about but need for predicting measurements
+        self._state_vectorizer = KinematicTreeParamVectorizer()
+        initial_config = {config: 0.0 for config in self.configs}
+        self._state_vectorizer.vectorize([initial_config])
+
+        # Initialize the measurement vectorizer to output only feature values
+        self._meas_vectorizer = KinematicTreeParamVectorizer()
+        self._meas_vectorizer.vectorize([initial_config])
+
+        self._state_length = len(initial_config)
+
+    def measurement_model(self, state_vector):
+        return state_vector
+
+    def process_model(self, state_vector):
+        return state_vector
+
+    def vectorize_measurement(self, feature_obs):
+        self._meas_vectorizer.vectorize(feature_obs)
+
+
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
             optimize={'configs':True, 'twists':True, 'features':True}):
@@ -1077,6 +1127,7 @@ class KinematicTreeObjectiveFunction(object):
         if configs is not None:
             configs.insert(0, self._config_dict_list[0])
         return configs, twists, features
+
 
 def generate_synthetic_observations(tree, num_obs=100):
     # Get all the movable joints in the tree

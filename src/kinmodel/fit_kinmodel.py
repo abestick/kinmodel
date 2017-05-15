@@ -59,7 +59,7 @@ def main():
         feature_dict = {}
         for marker_idx in all_marker_indices:
             if not np.isnan(frame[marker_idx,0,0]):
-                obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx,:,0], np.ones(1))))
+                obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx, :, 0], np.ones(1))))
                 feature_dict['mocap_' + str(marker_idx)] = obs_point
         feature_obs.append(feature_dict)
 

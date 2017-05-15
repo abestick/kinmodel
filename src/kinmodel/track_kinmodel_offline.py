@@ -1,29 +1,15 @@
 #!/usr/bin/env python
 from __future__ import print_function
 import numpy as np
-import scipy as sp
-import numpy.linalg as np_la
-import sys
 import phasespace.load_mocap as load_mocap
 import argparse
-import random
-import threading
-import matplotlib.pyplot as plt
-import cProfile
-import json
 import kinmodel
-import ukf
+from kinmodel.track_mocap import KinematicTreeTracker
 import matplotlib.pyplot as plt
-import rospy
-import sensor_msgs.msg as sensor_msgs
-from std_msgs.msg import Header
-import tf
-import tf.transformations
-import math
+
 
 FRAMERATE = 50
 GROUP_NAME = 'tree'
-
 
 
 def main():
@@ -63,9 +49,6 @@ def main():
         all_frames.append(joint_angles)
         all_covariances.append(covariance[:,:,None])
         all_residuals.append(squared_residual)
-
-
-
 
     # tracker = KinematicTreeTracker(tracker_kin_tree, ukf_mocap, joint_states_topic='/kinmodel_state',
     #         object_tf_frame='/object_base', new_frame_callback=new_frame_callback)

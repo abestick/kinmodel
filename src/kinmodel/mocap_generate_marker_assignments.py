@@ -59,7 +59,7 @@ class MarkerAssignments():
 
     def assign_marker(self, marker_num, joint_name, name_prefix='mocap_'):
         joints = self._tree.get_joints()
-        primitive = kinmodel.new_geometric_primitive([0.0,0.0,0.0,1.0])
+        primitive = kinmodel.new_geometric_primitive([0.0, 0.0, 0.0, 1.0])
         feature = kinmodel.Feature(name_prefix + str(marker_num), primitive)
         joints[joint_name].children.append(feature)
 

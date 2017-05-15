@@ -10,6 +10,7 @@ import ukf
 import kinmodel
 import numpy.linalg as npla
 from phasespace.mocap_definitions import MocapWrist
+from phasespace.load_mocap import transform_frame, find_homog_trans
 
 
 class MocapTracker(object):
@@ -36,8 +37,8 @@ class MocapTracker(object):
 
         self.uk_filter = ukf.UnscentedKalmanFilter(self.state_space_model.process_model,
                                                    self.state_space_model.measurement_model,
-                                                   x0=np.zeros(self.state_space_model.state_length),
-                                                   P0=np.identity(self.state_space_model.state_length) * 0.25,
+                                                   x0=np.zeros(self.state_space_model.state_length()),
+                                                   P0=np.identity(self.state_space_model.state_length()) * 0.25,
                                                    Q=np.pi / 2 / 80, R=5e-3)
 
         self.mocap_source.set_coordinates(self.base_indices, self.base_frame_points, mode='time_varying')
@@ -74,6 +75,9 @@ class MocapTracker(object):
         return {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :, 0]))
                 for name in self._marker_indices}
 
+    def _preprocess_measurement(self, observation):
+        return observation
+
     def get_marker_indices(self, marker_names):
         return [self._marker_indices[name] for name in marker_names]
 
@@ -97,13 +101,15 @@ class MocapTracker(object):
 
             self._observation = self._extract_observation(frame)
 
-            observation_array = self.state_space_model.vectorize_measurement(self._observation)
+            measurement = self._preprocess_measurement(self._observation)
+
+            measurement_array = self.state_space_model.vectorize_measurement(measurement)
 
             if i == 0:
-                self._initialize_filter(observation_array)
+                self._initialize_filter(measurement_array)
                 continue
 
-            self._estimation, self._covariance, self._squared_residual = self.uk_filter.filter(observation_array)
+            self._estimation, self._covariance, self._squared_residual = self.uk_filter.filter(measurement_array)
 
             self._update_outputs(i)
 
@@ -130,8 +136,8 @@ class KinematicTreeTracker(MocapTracker):
         # Set the base coordinate transform for the mocap stream
         base_frame_points = np.zeros((len(base_markers), 3, 1))
         all_features = self.kin_tree.get_features()
-        for i, idx in enumerate(base_markers):
-            base_frame_points[i, :, 0] = all_features['mocap_' + str(idx)].q()
+        for i, marker in enumerate(base_markers):
+            base_frame_points[i, :, 0] = all_features[marker].q()
 
         state_space_model = kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
 
@@ -245,20 +251,38 @@ class WristTracker(MocapTracker, MocapWrist):
     def __init__(self, mocap_source, marker_indices, reference_frame, joint_states_topic=None, object_tf_frame=None,
                  new_frame_callback=None):
         assert all(name in marker_indices for name in self.names), \
-            "marker_names must contain all these keys %s" % self.names
+            "marker_indices must contain all these keys %s" % self.names
 
         base_markers = self.get_marker_group('hand')
         arm_markers = self.get_marker_group('arm')
 
-        _, base_frame_points = determine_hand_coordinate_transform(extract_marker_subset(reference_frame, base_markers,
-                                                                                         marker_indices),
-                                                                   extract_marker_subset(reference_frame, arm_markers,
-                                                                                         marker_indices))
+        transform, base_frame_points = determine_hand_coordinate_transform(
+            extract_marker_subset(reference_frame, base_markers, marker_indices),
+            extract_marker_subset(reference_frame, arm_markers, marker_indices))
 
-        state_space_model = WristStateSpaceModel()
+        reference_in_hand_coords = transform_frame(reference_frame, transform)
+        reference_dict = self._extract_observation(reference_in_hand_coords)
+        self._arm_zero = {marker: reference_dict[marker] for marker in arm_markers}
 
-        super(WristTracker, self).__init__(mocap_source, state_space_model, base_markers, base_frame_points, marker_indices,
+        super(WristTracker, self).__init__(mocap_source, MocapWrist(), base_markers, base_frame_points, marker_indices,
                                            joint_states_topic, object_tf_frame, new_frame_callback)
+
+    def _preprocess_measurement(self, observation):
+        current = []
+        desired = []
+
+        for marker in self._arm_zero:
+            current.append(observation[marker])
+            desired.append(self._arm_zero[marker])
+
+        current_array = kinmodel.stack(*current, homog=False).T
+        desired_array = kinmodel.stack(*desired, homog=False).T
+
+        homog = find_homog_trans(current_array, desired_array)
+
+        euler_angles = tf.transformations.euler_from_matrix(homog[:3, :3])
+
+        return {config: euler_angles[i] for i, config in enumerate(self.configs)}
 
 
 def unit_vector(array):
@@ -292,7 +316,7 @@ def determine_hand_coordinate_transform(hand_points, arm_points):
     return homog_transform, desired_hand_points[:, :3]
 
 
-def PCA(data, correlation = False, sort = True):
+def pca(data, correlation = False, sort = True):
     """ Applies Principal Component Analysis to the data
     
     Parameters
@@ -383,7 +407,7 @@ def best_fitting_plane(points, equation=False):
     
     """
 
-    w, v = PCA(points)
+    w, v = pca(points)
 
     #: the normal of the plane is the last eigenvector
     normal = v[:,2]
