@@ -11,7 +11,7 @@ import scipy.optimize
 import matplotlib.pyplot as plt
 import cProfile
 import json
-import kinmodel
+import kinmodel.src.kinmodel.kinmodel.src.kinmodel.kinmodel
 import matplotlib.pyplot as plt
 
 FRAMERATE = 50
@@ -31,7 +31,7 @@ def main():
 
     # Get the base marker indices
     base_indices = []
-    kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json)
+    kin_tree = kinmodel.src.kinmodel.kinmodel.KinematicTree(json_filename=args.kinmodel_json)
     base_joint = kin_tree.get_root_joint()
     for child in base_joint.children:
         if not hasattr(child, 'children'):
@@ -59,7 +59,7 @@ def main():
         feature_dict = {}
         for marker_idx in all_marker_indices:
             if not np.isnan(frame[marker_idx,0,0]):
-                obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx, :, 0], np.ones(1))))
+                obs_point = kinmodel.src.kinmodel.kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx, :, 0], np.ones(1))))
                 feature_dict['mocap_' + str(marker_idx)] = obs_point
         feature_obs.append(feature_dict)
 

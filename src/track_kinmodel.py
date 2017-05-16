@@ -11,8 +11,8 @@ import threading
 import matplotlib.pyplot as plt
 import cProfile
 import json
-import kinmodel
-import ukf
+import kinmodel.src.kinmodel.kinmodel.src.kinmodel.kinmodel
+import kinmodel.src.kinmodel.ukf
 import matplotlib.pyplot as plt
 import rospy
 import sensor_msgs.msg as sensor_msgs
@@ -24,6 +24,7 @@ import math
 
 FRAMERATE = 50
 GROUP_NAME = 'tree'
+
 
 class KinematicTreeTracker(object):
     def __init__(self, kin_tree, mocap_source, joint_states_topic=None, object_tf_frame=None,
@@ -76,7 +77,7 @@ class KinematicTreeTracker(object):
         num_joints = len(self.kin_tree.get_twists())
         
         # Create the observation and measurement models
-        test_ss_model = kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
+        test_ss_model = kinmodel.src.kinmodel.kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
         measurement_dim = len(test_ss_model.measurement_model(np.zeros(num_joints)))
 
         # Run the filter
@@ -85,16 +86,16 @@ class KinematicTreeTracker(object):
                 break
             feature_dict = {}
             for marker_idx in all_marker_indices:
-                obs_point = kinmodel.new_geometric_primitive(
+                obs_point = kinmodel.src.kinmodel.kinmodel.new_geometric_primitive(
                         np.concatenate((frame[marker_idx,:,0], np.ones(1))))
                 feature_dict['mocap_' + str(marker_idx)] = obs_point
             if i == 0:
                 sys.stdout.flush()
                 initial_obs = test_ss_model.vectorize_measurement(feature_dict)
-                uk_filter = ukf.UnscentedKalmanFilter(test_ss_model.process_model,
-                        test_ss_model.measurement_model,
-                        np.zeros(num_joints), # Initial state
-                        np.identity(num_joints)*0.25, # Initial error covariance
+                uk_filter = kinmodel.src.kinmodel.ukf.UnscentedKalmanFilter(test_ss_model.process_model,
+                                                                            test_ss_model.measurement_model,
+                                                                            np.zeros(num_joints),  # Initial state
+                        np.identity(num_joints) * 0.25,  # Initial error covariance
                         Q=math.pi/2/80, R=5e-3)
                 for i in range(50):
                     uk_filter.filter(initial_obs)
@@ -150,7 +151,7 @@ class KinematicTreeExternalFrameTracker(object):
         else:
             # Attach the frame at the specified pose
             homog = pose.squeeze()
-        new_feature = kinmodel.Feature(frame_name, kinmodel.Transform(homog_array=homog))
+        new_feature = kinmodel.src.kinmodel.kinmodel.Feature(frame_name, kinmodel.src.kinmodel.kinmodel.Transform(homog_array=homog))
         joints[joint_name].children.append(new_feature)
         self._attached_frame_names.append(frame_name)
         if tf_pub:
@@ -162,7 +163,7 @@ class KinematicTreeExternalFrameTracker(object):
 
         # Attach tf frame
         joints = self._kin_tree.get_joints()
-        new_feature = kinmodel.Feature(tf_frame_name, kinmodel.Transform())
+        new_feature = kinmodel.src.kinmodel.kinmodel.Feature(tf_frame_name, kinmodel.src.kinmodel.kinmodel.Transform())
         joints[joint_name].children.append(new_feature)
         self._attached_tf_frame_names.append(tf_frame_name)
 
@@ -206,7 +207,7 @@ class KinematicTreeExternalFrameTracker(object):
                 trans, rot = self._tf_listener.lookupTransform(self._base_frame_name, frame_name, rospy.Time(0))
                 tf_transform = tf.transformations.quaternion_matrix(rot)
                 tf_transform[0:3,3] = trans
-                base_robot_trans = kinmodel.Transform(homog_array=tf_transform)
+                base_robot_trans = kinmodel.src.kinmodel.kinmodel.Transform(homog_array=tf_transform)
                 base_reference_trans = feature_obs['_tf_ref_' + frame_name]
                 base_reference_zero_config = all_features['_tf_ref_' + frame_name]
                 updated_features[frame_name] = base_reference_zero_config * (base_reference_trans.inv() * base_robot_trans)
@@ -240,7 +241,7 @@ def main():
 
     # Load the mocap stream
     ukf_mocap = load_mocap.PointCloudStream('/mocap_point_cloud')
-    tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
+    tracker_kin_tree = kinmodel.src.kinmodel.kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
     # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
 

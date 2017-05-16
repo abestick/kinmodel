@@ -52,7 +52,7 @@ def main():
 
     # tracker = KinematicTreeTracker(tracker_kin_tree, ukf_mocap, joint_states_topic='/kinmodel_state',
     #         object_tf_frame='/object_base', new_frame_callback=new_frame_callback)
-    tracker = KinematicTreeTracker(tracker_kin_tree, ukf_mocap, new_frame_callback=new_frame_callback)
+    tracker = KinematicTreeTracker('cardboard', tracker_kin_tree, ukf_mocap, new_frame_callback=new_frame_callback)
     tracker.run()
     # tracker.start().join()
     ukf_output = np.concatenate(all_frames, axis=1)

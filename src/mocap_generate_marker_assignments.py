@@ -11,7 +11,7 @@ import numpy as np
 import argparse
 import json
 import uuid
-import kinmodel
+import kinmodel.src.kinmodel.kinmodel.src.kinmodel.kinmodel
 
 class MarkerAssignments():
     def __init__(self, kin_tree, assignments={}):
@@ -59,8 +59,8 @@ class MarkerAssignments():
 
     def assign_marker(self, marker_num, joint_name, name_prefix='mocap_'):
         joints = self._tree.get_joints()
-        primitive = kinmodel.new_geometric_primitive([0.0, 0.0, 0.0, 1.0])
-        feature = kinmodel.Feature(name_prefix + str(marker_num), primitive)
+        primitive = kinmodel.src.kinmodel.kinmodel.new_geometric_primitive([0.0, 0.0, 0.0, 1.0])
+        feature = kinmodel.src.kinmodel.kinmodel.Feature(name_prefix + str(marker_num), primitive)
         joints[joint_name].children.append(feature)
 
     def get_last_frame(self):
@@ -75,7 +75,7 @@ def main():
     args = parser.parse_args()
 
     # Load the kinematic tree, list all joints, and delete existing markers
-    kin_tree = kinmodel.KinematicTree(json_filename=args.input_kinmodel_file)
+    kin_tree = kinmodel.src.kinmodel.kinmodel.KinematicTree(json_filename=args.input_kinmodel_file)
     tree_joints = kin_tree.get_joints()
     for joint in tree_joints:
         for child in tree_joints[joint].children:

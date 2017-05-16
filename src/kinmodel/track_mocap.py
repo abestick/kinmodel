@@ -15,8 +15,9 @@ from phasespace.load_mocap import transform_frame, find_homog_trans
 
 class MocapTracker(object):
 
-    def __init__(self, mocap_source, state_space_model, base_markers, base_frame_points, marker_indices,
+    def __init__(self, name, mocap_source, state_space_model, base_markers, base_frame_points, marker_indices,
                  joint_states_topic=None, object_tf_frame=None, new_frame_callback=None):
+        self.name = name
         self.mocap_source = mocap_source
         self.state_space_model = state_space_model
         self.base_markers = base_markers
@@ -41,7 +42,7 @@ class MocapTracker(object):
                                                    P0=np.identity(self.state_space_model.state_length()) * 0.25,
                                                    Q=np.pi / 2 / 80, R=5e-3)
 
-        self.mocap_source.set_coordinates(self.base_indices, self.base_frame_points, mode='time_varying')
+        self.mocap_source.set_coordinates(self.name, self.base_indices, self.base_frame_points, mode='time_varying')
 
         self._estimation = None
         self._observation = None
@@ -94,7 +95,7 @@ class MocapTracker(object):
         self.exit = True
 
     def run(self):
-        for i, (frame, timestamp) in enumerate(self.mocap_source):
+        for i, (frame, timestamp) in enumerate(self.mocap_source.iterate(self.name)):
 
             if self.exit:
                 break
@@ -115,7 +116,7 @@ class MocapTracker(object):
 
 
 class KinematicTreeTracker(MocapTracker):
-    def __init__(self, kin_tree, mocap_source, joint_states_topic=None, object_tf_frame=None,
+    def __init__(self, name, kin_tree, mocap_source, joint_states_topic=None, object_tf_frame=None,
                  new_frame_callback=None, return_array=False):
         self.kin_tree = kin_tree
         self._return_array = return_array
@@ -141,7 +142,7 @@ class KinematicTreeTracker(MocapTracker):
 
         state_space_model = kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
 
-        super(KinematicTreeTracker, self).__init__(mocap_source, state_space_model, base_markers, base_frame_points,
+        super(KinematicTreeTracker, self).__init__(name, mocap_source, state_space_model, base_markers, base_frame_points,
                                                    marker_indices, joint_states_topic, object_tf_frame,
                                                    new_frame_callback)
 
@@ -248,7 +249,7 @@ class KinematicTreeExternalFrameTracker(object):
 
 class WristTracker(MocapTracker, MocapWrist):
 
-    def __init__(self, mocap_source, marker_indices, reference_frame, joint_states_topic=None, object_tf_frame=None,
+    def __init__(self, name, mocap_source, marker_indices, reference_frame, joint_states_topic=None, object_tf_frame=None,
                  new_frame_callback=None):
         assert all(name in marker_indices for name in self.names), \
             "marker_indices must contain all these keys %s" % self.names
@@ -264,7 +265,7 @@ class WristTracker(MocapTracker, MocapWrist):
         reference_dict = self._extract_observation(reference_in_hand_coords)
         self._arm_zero = {marker: reference_dict[marker] for marker in arm_markers}
 
-        super(WristTracker, self).__init__(mocap_source, MocapWrist(), base_markers, base_frame_points, marker_indices,
+        super(WristTracker, self).__init__(name, mocap_source, MocapWrist(), base_markers, base_frame_points, marker_indices,
                                            joint_states_topic, object_tf_frame, new_frame_callback)
 
     def _preprocess_measurement(self, observation):
