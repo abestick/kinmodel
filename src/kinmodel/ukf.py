@@ -37,9 +37,15 @@ class UnscentedKalmanFilter(object):
         # measurements
         meas_sigma_pts = self.meas_func(process_sigma_pts)
         obs_missing = np.isnan(observation.squeeze())
+
+        if obs_missing.all():
+            # Update the state mean and covariance values with the innovation
+            self.x = process_mean[:, None]
+            self.P = process_covar
+            return self.x, self.P, np.nan
+
         observation = observation[np.logical_not(obs_missing)]
         meas_sigma_pts = meas_sigma_pts[np.logical_not(obs_missing),:]
-
 
         # Compute the mean and covariance of the predicted measurement values
         meas_mean, meas_covar = sigma_pts_to_mean_covariance(meas_sigma_pts, meas_sigma_pts,

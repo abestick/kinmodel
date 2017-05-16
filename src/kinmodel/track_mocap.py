@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import print_function
 import numpy as np
+from numpy.linalg import LinAlgError
 import threading
 import rospy
 import tf
@@ -50,6 +51,7 @@ class MocapTracker(object):
         self._squared_residual = None
 
     def _initialize_filter(self, initial_observation, reps=50):
+        print(initial_observation)
         for i in range(reps):
             self.uk_filter.filter(initial_observation)
 
@@ -73,7 +75,7 @@ class MocapTracker(object):
                                            rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
 
     def _extract_observation(self, frame):
-        return {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :, 0]))
+        return {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :]))
                 for name in self._marker_indices}
 
     def _preprocess_measurement(self, observation):
@@ -261,27 +263,39 @@ class WristTracker(MocapTracker, MocapWrist):
             extract_marker_subset(reference_frame, base_markers, marker_indices),
             extract_marker_subset(reference_frame, arm_markers, marker_indices))
 
+        super(WristTracker, self).__init__(name, mocap_source, kinmodel.WristStateSpaceModel(), base_markers, base_frame_points,
+                                           marker_indices, joint_states_topic, object_tf_frame, new_frame_callback)
+
         reference_in_hand_coords = transform_frame(reference_frame, transform)
+        print(reference_frame)
+        print(reference_in_hand_coords)
+        print(transform)
         reference_dict = self._extract_observation(reference_in_hand_coords)
         self._arm_zero = {marker: reference_dict[marker] for marker in arm_markers}
-
-        super(WristTracker, self).__init__(name, mocap_source, MocapWrist(), base_markers, base_frame_points, marker_indices,
-                                           joint_states_topic, object_tf_frame, new_frame_callback)
+        print(self._arm_zero)
 
     def _preprocess_measurement(self, observation):
         current = []
         desired = []
 
         for marker in self._arm_zero:
-            current.append(observation[marker])
-            desired.append(self._arm_zero[marker])
+            if not np.isnan(observation[marker].q()).any():
+                current.append(observation[marker])
+                desired.append(self._arm_zero[marker])
 
-        current_array = kinmodel.stack(*current, homog=False).T
-        desired_array = kinmodel.stack(*desired, homog=False).T
+        if len(current) < 3:
+            euler_angles = np.full(3, np.nan)
 
-        homog = find_homog_trans(current_array, desired_array)
+        else:
+            current_array = kinmodel.stack(*current, homog=False)
+            desired_array = kinmodel.stack(*desired, homog=False)
 
-        euler_angles = tf.transformations.euler_from_matrix(homog[:3, :3])
+            homog, _ = find_homog_trans(current_array, desired_array)
+
+            euler_angles = tf.transformations.euler_from_matrix(homog[:3, :3])
+
+        # except LinAlgError:
+        #     euler_angles = np.full(3, np.nan)
 
         return {config: euler_angles[i] for i, config in enumerate(self.configs)}
 
@@ -295,24 +309,24 @@ def extract_marker_subset(frame_data, names, marker_indices):
     return frame_data[indices, :]
 
 
-def determine_hand_coordinate_transform(hand_points, arm_points):
+def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-15):
     origin, normal = best_fitting_plane(hand_points)
     z_axis = unit_vector(normal)
     arm_vec = np.mean(arm_points, axis=0) - origin
     arm_z = arm_vec.dot(z_axis) * z_axis
     x_axis = unit_vector(arm_vec - arm_z)
 
-    assert x_axis.dot(z_axis) == 0, "Axes are not orthogonal!"
+    assert abs(x_axis.dot(z_axis)) < zero_thresh, "Axes are not orthogonal!"
 
     y_axis = np.cross(z_axis, x_axis)
 
-    rotation_matrix = np.hstack((x_axis, y_axis, z_axis))
-    origin_in_hand_frame = rotation_matrix.dot(origin)
+    rotation_matrix = np.stack((x_axis, y_axis, z_axis)).T
+    origin_in_hand_frame = rotation_matrix.dot(origin).reshape((-1, 1))
     homog_transform = np.vstack((np.hstack((rotation_matrix, origin_in_hand_frame)), np.append(np.zeros(3), 1)))
 
-    desired_hand_points = np.empty(hand_points.shape[0], 4)
+    desired_hand_points = np.empty((hand_points.shape[0], 4))
     for i, marker in enumerate(hand_points):
-        desired_hand_points[i, :] = homog_transform.dot(np.append(hand_points, 1))
+        desired_hand_points[i, :] = homog_transform.dot(np.append(marker, 1))
 
     return homog_transform, desired_hand_points[:, :3]
 

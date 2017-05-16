@@ -1040,11 +1040,11 @@ class WristStateSpaceModel(StateSpaceModel, MocapWrist):
         # We extend our state vector to include the translation we don't care about but need for predicting measurements
         self._state_vectorizer = KinematicTreeParamVectorizer()
         initial_config = {config: 0.0 for config in self.configs}
-        self._state_vectorizer.vectorize([initial_config])
+        self._state_vectorizer.vectorize(configs=[initial_config])
 
         # Initialize the measurement vectorizer to output only feature values
         self._meas_vectorizer = KinematicTreeParamVectorizer()
-        self._meas_vectorizer.vectorize([initial_config])
+        self._meas_vectorizer.vectorize(configs=[initial_config])
 
         self._state_length = len(initial_config)
 
@@ -1054,8 +1054,8 @@ class WristStateSpaceModel(StateSpaceModel, MocapWrist):
     def process_model(self, state_vector):
         return state_vector
 
-    def vectorize_measurement(self, feature_obs):
-        self._meas_vectorizer.vectorize(feature_obs)
+    def vectorize_measurement(self, configs_obs):
+        return self._meas_vectorizer.vectorize(configs=[configs_obs])
 
 
 class KinematicTreeObjectiveFunction(object):
