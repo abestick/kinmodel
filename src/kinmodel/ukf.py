@@ -5,6 +5,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
+
 class UnscentedKalmanFilter(object):
     def __init__(self, proc_func, meas_func, x0, P0, Q=1e-1, R=1e-2):
         """Create an Unscented Kalman Filter instance with the specified process/measurement
@@ -63,7 +64,7 @@ class UnscentedKalmanFilter(object):
         obs_missing = np.isnan(observation.squeeze())
 
         if obs_missing.all():
-            # Update the state mean and covariance values with the innovation
+            # If we have no measurements simply propogate the model prediction
             self.x = process_mean[:, None]
             self.P = process_covar
             return self.x, self.P, np.nan
@@ -122,6 +123,7 @@ class UnscentedKalmanFilter(object):
         self.axes.auto_scale_xyz([-0.5,0.5], [-0.5,0.5], [-0.5,0.5])
         plt.ion()
         plt.pause(0.01)
+
 
 def generate_sigma_pts(mean, covariance, alpha_squared=1.0e-3):
     # Make mean (N,)

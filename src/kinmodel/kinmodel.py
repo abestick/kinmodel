@@ -19,11 +19,11 @@ np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
 def new_geometric_primitive(input_data):
     homog_array = None
-    #If the input is a GeometricPrimitive
+    # If the input is a GeometricPrimitive
     try:
         homog_array = input_data.homog()
     except AttributeError:
-        #Otherwise, if it's an array-like object
+        # Otherwise, if it's an array-like object
         homog_array = np.asarray(input_data)
         homog_array = homog_array.squeeze()
 
@@ -44,30 +44,63 @@ def new_geometric_primitive(input_data):
 
 
 def stack(*args, **kwargs):
-    homog = kwargs.get('homog', True)
+    """
+    Takes multiple geometric objects and stacks their arrays, will throw a numpy error if incompatible shapes are passed
+    :param args: the objects tp stack
+    :param kwargs: various options categorized below
+    homog (bool): When this is false, only the first three rows are taken, discarding homogeneous representation
+    :return: numpy array
+    :rtype: numpy.ndarray
+    """
+    homog = kwargs.pop('homog', True)
+
+    if len(kwargs) > 0:
+        print("The following options aren't implemented: %s" % kwargs.keys())
 
     dims = slice(None) if homog else slice(None, 3)
 
     return np.stack([arg.homog()[dims] for arg in args])
 
 
-
 class StateSpaceModel(object):
+    """
+    An abstract class describing the bare bones needed for a state space model to be defined
+    """
     __metaclass__ = ABCMeta
 
     @abstractmethod
     def process_model(self, state_vector):
+        """
+        The process model of the system x(k+1) = p(x(k))
+        :param state_vector: a numpy array of x(k)
+        :return: x(k+1) 
+        """
         pass
 
     @abstractmethod
     def measurement_model(self, state_vector):
+        """
+        The measurement model of the system z(k) = h(x(k))
+        :param state_vector: a numpy array of x(k)
+        :return: z(k)
+        """
         pass
 
     @abstractmethod
     def vectorize_measurement(self, feature_obs):
+        """
+        Takes a dictionary of measurements and prepares it as a numpy array in the same order as the measurement_model
+        produces z(k)
+        :param dict feature_obs: a dictionary of the measurements
+        :return: a numpy array z(k)
+        """
         pass
 
     def state_length(self):
+        """
+        :return: the total number of states
+        :rtype: int
+        """
         return self._state_length
 
 
@@ -993,6 +1026,11 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
 
 class WristStateSpaceModel2(StateSpaceModel, MocapWrist):
+    """
+    Currently unused. Describes the system whereby mocap points are measurements and the transformation between hand
+    frame and arm frame are the states. This is not very elegant since we can compute this transformation directly but
+    may be useful later if we eventually model the wrist
+    """
     def __init__(self, reference_features):
 
         assert all(feature in reference_features for feature in self.names), \
@@ -1014,6 +1052,11 @@ class WristStateSpaceModel2(StateSpaceModel, MocapWrist):
         self._state_length = len(initial_config)
 
     def _state_vector_to_transform(self, state_vector):
+        """
+        'Unflattens' the the state vector back into the homogenous transform it represents
+        :param state_vector: (6,) numpy array
+        :return: (4, 4) numpy array
+        """
         configs = self._state_vectorizer.unvectorize(state_vector)[0]
         homog = np.zeros((4,4))
         homog[4, 4] = 1
@@ -1022,11 +1065,17 @@ class WristStateSpaceModel2(StateSpaceModel, MocapWrist):
         return Transform(homog)
 
     def measurement_model(self, state_vector):
+        """
+        Transforms all the points by the transform represented in the state vector
+        """
         transform = self._configs_to_transform(state_vector)
         meas_features = {feature: transform*self.reference_features[feature] for feature in self.names}
         return self._meas_vectorizer.vectorize(meas_features)
 
     def process_model(self, state_vector):
+        """
+        Identity process
+        """
         return state_vector
 
     def vectorize_measurement(self, feature_obs):
@@ -1034,6 +1083,10 @@ class WristStateSpaceModel2(StateSpaceModel, MocapWrist):
 
 
 class WristStateSpaceModel(StateSpaceModel, MocapWrist):
+    """
+    Uses the euler angles describing the rotation about the wrist as both the states and the measurement with identity
+    process and measurement models.
+    """
     def __init__(self):
 
         # Initialize the state vectorizer to output only config values
@@ -1042,16 +1095,18 @@ class WristStateSpaceModel(StateSpaceModel, MocapWrist):
         initial_config = {config: 0.0 for config in self.configs}
         self._state_vectorizer.vectorize(configs=[initial_config])
 
-        # Initialize the measurement vectorizer to output only feature values
+        # Initialize the measurement vectorizer to output only config values
         self._meas_vectorizer = KinematicTreeParamVectorizer()
         self._meas_vectorizer.vectorize(configs=[initial_config])
 
         self._state_length = len(initial_config)
 
     def measurement_model(self, state_vector):
+        """Identity"""
         return state_vector
 
     def process_model(self, state_vector):
+        """Identity"""
         return state_vector
 
     def vectorize_measurement(self, configs_obs):

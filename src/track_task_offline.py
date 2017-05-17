@@ -14,7 +14,6 @@ GROUP_NAME = 'tree'
 
 
 def main():
-    plt.ion()
     parser = argparse.ArgumentParser()
     parser.add_argument('kinmodel_json_optimized', help='The kinematic model JSON file')
     parser.add_argument('task_npz')
@@ -111,7 +110,7 @@ def main():
     ax2.set_xlabel('Time (s)')
     ax2.set_ylabel('$\\theta$ (rad)')
 
-    plt.pause(100)
+    plt.show()
 
     
 if __name__ == '__main__':

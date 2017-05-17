@@ -1,0 +1,50 @@
+{
+    "name": "joint0",
+    "twist": null,
+    "children": [
+        {
+            "name": "joint1",
+            "twist": [
+                0,
+                0,
+                1,
+                1,
+                1,
+                0
+            ],
+            "children": [
+                {
+                    "name": "feat1",
+                    "primitive": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "joint2",
+            "twist": [
+                0,
+                0,
+                1,
+                1,
+                -1,
+                0
+            ],
+            "children": [
+                {
+                    "name": "feat2",
+                    "primitive": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ]
+                }
+            ]
+        }
+    ]
+}

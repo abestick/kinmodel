@@ -15,17 +15,39 @@ from phasespace.load_mocap import transform_frame, find_homog_trans
 
 
 class MocapTracker(object):
+    """
+    A general class which pipes mocap points from a mocap source to a UKF
+    """
 
     def __init__(self, name, mocap_source, state_space_model, base_markers, base_frame_points, marker_indices,
                  joint_states_topic=None, object_tf_frame=None, new_frame_callback=None):
+        """
+        Constructor
+        :param name: This name helps when defining coordinate frames in the mocap source so that each tracker is unique
+        :param mocap_source: the MocapSource object to draw point data from
+        :param state_space_model: the model which the UKF will be based on
+        :param base_markers: list of strings, the markers which are static relative to one another in the base frame
+        I chose to pass the names of the markers instead of the indices so tracker definitions are more readable
+        :param base_frame_points: the values of the base_markers when transformed into the base frame
+        :param dict marker_indices: a dictionary mapping marker names to marker indices in the MocapSource
+        :param joint_states_topic: an optional topic upon which to publish tracker output
+        :param object_tf_frame: Not 100% sure how this ties in now, relic of KinematicTreeTracker but maybe it should be
+        only in the KinematicTreeTrack child??
+        :param new_frame_callback: optional callback function called when UKF output is obtained
+        """
+        # copy across data
         self.name = name
         self.mocap_source = mocap_source
         self.state_space_model = state_space_model
         self.base_markers = base_markers
         self.base_frame_points = base_frame_points
         self._marker_indices = marker_indices
+        # reverse the dict so we can access names for  markers too
         self._marker_names = {index: name for name, index in self._marker_indices.items()}
+
+        # get the indices for the bases
         self.base_indices = self.get_marker_indices(self.base_markers)
+
         self._estimation_pub = None
         self._tf_pub = None
         self._callback = new_frame_callback
@@ -37,12 +59,14 @@ class MocapTracker(object):
         if object_tf_frame is not None:
             self._tf_pub = tf.TransformBroadcaster()
 
+        # set up the filter
         self.uk_filter = ukf.UnscentedKalmanFilter(self.state_space_model.process_model,
                                                    self.state_space_model.measurement_model,
                                                    x0=np.zeros(self.state_space_model.state_length()),
                                                    P0=np.identity(self.state_space_model.state_length()) * 0.25,
                                                    Q=np.pi / 2 / 80, R=5e-3)
 
+        # setup a coordinate frame for the system in the source (maybe we need to check for uniqueness)
         self.mocap_source.set_coordinates(self.name, self.base_indices, self.base_frame_points, mode='time_varying')
 
         self._estimation = None
@@ -97,7 +121,7 @@ class MocapTracker(object):
         self.exit = True
 
     def run(self):
-        for i, (frame, timestamp) in enumerate(self.mocap_source.iterate(self.name)):
+        for i, (frame, timestamp) in enumerate(self.mocap_source.iterate(coordinate_frame=self.name)):
 
             if self.exit:
                 break
