@@ -75,11 +75,22 @@ class MocapTracker(object):
         self._squared_residual = None
 
     def _initialize_filter(self, initial_observation, reps=50):
+        """
+        Runs the filter to converge initial error
+        :param initial_observation: initial measurement vector
+        :param reps: how many cycles to run
+        :return: 
+        """
         print(initial_observation)
         for i in range(reps):
             self.uk_filter.filter(initial_observation)
 
     def _update_outputs(self, i):
+        """
+        Calls callbacks, oublishes to topics, and to tf 
+        :param i: the frame count
+        :return: 
+        """
         if self._callback is not None:
             self._callback(i, self._estimation, covariance=self._covariance,
                            squared_residual=self._squared_residual)
@@ -99,45 +110,69 @@ class MocapTracker(object):
                                            rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
 
     def _extract_observation(self, frame):
+        """
+        Converts a mocap frame into a dict of marker names and geometric Points
+        :param frame: mocap frame (n,3)
+        :return: dict of geometric Points
+        """
         return {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :]))
                 for name in self._marker_indices}
 
     def _preprocess_measurement(self, observation):
+        """
+        Converts a marker observation into a whatever format the state space's measurement is defined in, this is an
+        identity function if not overloaded
+        :param observation: dict of marker points
+        :return: any format of measurement
+        """
         return observation
 
     def get_marker_indices(self, marker_names):
+        """Returns the marker indices for a set of marker names"""
         return [self._marker_indices[name] for name in marker_names]
 
     def get_marker_names(self, marker_indices):
+        """Returns the marker names for a set of marker indices"""
         return [self._marker_names[index] for index in marker_indices]
 
     def start(self):
+        """Runs the thread to begin the tracker"""
         self.exit = False
         reader_thread = threading.Thread(target=self.run)
         reader_thread.start()
         return reader_thread
 
     def stop(self):
+        """Stops the thread"""
         self.exit = True
 
     def run(self):
+        """
+        Iterates over the mocap source, applies all processing and filtering to the data and calls the relevant updates 
+        """
         for i, (frame, timestamp) in enumerate(self.mocap_source.iterate(coordinate_frame=self.name)):
 
             if self.exit:
                 break
 
+            # convert frame into observation dict and store
             self._observation = self._extract_observation(frame)
 
+            # convert observation dict into state space measurement
             measurement = self._preprocess_measurement(self._observation)
 
+            # vectorize the measurement
             measurement_array = self.state_space_model.vectorize_measurement(measurement)
 
+            # if its our first frame, converge the error in the filter
             if i == 0:
                 self._initialize_filter(measurement_array)
                 continue
 
+            # otherwise store filter output
             self._estimation, self._covariance, self._squared_residual = self.uk_filter.filter(measurement_array)
 
+            # and call the callbacks, publisher's etc
             self._update_outputs(i)
 
 
@@ -274,42 +309,61 @@ class KinematicTreeExternalFrameTracker(object):
 
 
 class WristTracker(MocapTracker, MocapWrist):
-
+    """
+    Child of MocapTracker and MocapWrist specific to wrist tracking. Inheriting MocapWrist means this class inherits all
+    the pre-defined marker names and marker groups specific to the wrist which are define in 
+    phasespace.mocap_definitions.MocapWrist
+    """
     def __init__(self, name, mocap_source, marker_indices, reference_frame, joint_states_topic=None, object_tf_frame=None,
                  new_frame_callback=None):
+        # make sure the marker_indices dict contains all the necessary names
         assert all(name in marker_indices for name in self.names), \
             "marker_indices must contain all these keys %s" % self.names
 
+        # get the relevant subsets
         base_markers = self.get_marker_group('hand')
         arm_markers = self.get_marker_group('arm')
 
+        # determine the frame with the origin at the mean of the hand points, the z axis normal to the plane they form
+        # and the x axis the vector to the arm at zero conditions projected onto this plane
         transform, base_frame_points = determine_hand_coordinate_transform(
             extract_marker_subset(reference_frame, base_markers, marker_indices),
             extract_marker_subset(reference_frame, arm_markers, marker_indices))
 
+        # pass the acquired information to the super call
         super(WristTracker, self).__init__(name, mocap_source, kinmodel.WristStateSpaceModel(), base_markers, base_frame_points,
                                            marker_indices, joint_states_topic, object_tf_frame, new_frame_callback)
 
+        # transform the points in the reference frame into the base frame
         reference_in_hand_coords = transform_frame(reference_frame, transform)
-        print(reference_frame)
-        print(reference_in_hand_coords)
-        print(transform)
+
+        # turn this into a dict of points
         reference_dict = self._extract_observation(reference_in_hand_coords)
+
+        # set the zero conditions of the arm as the arm points of the reference frame in the hand coordinate system
         self._arm_zero = {marker: reference_dict[marker] for marker in arm_markers}
-        print(self._arm_zero)
 
     def _preprocess_measurement(self, observation):
+        """
+        Overloads parent method, works out the transform between the current arm points and the zero condition arm
+        points and returns the rotation component of this transform in euler angles
+        :param observation: dict of marker points
+        :return: dict of roll pitch yaw
+        """
         current = []
         desired = []
 
+        # get the arm markers that are visible
         for marker in self._arm_zero:
             if not np.isnan(observation[marker].q()).any():
                 current.append(observation[marker])
                 desired.append(self._arm_zero[marker])
 
+        # if we don't have enough, return nans
         if len(current) < 3:
             euler_angles = np.full(3, np.nan)
 
+        # otherwise workout the transform and convert to euler
         else:
             current_array = kinmodel.stack(*current, homog=False)
             desired_array = kinmodel.stack(*desired, homog=False)
@@ -325,15 +379,29 @@ class WristTracker(MocapTracker, MocapWrist):
 
 
 def unit_vector(array):
+    """Divides an array by its norm"""
     return array / npla.norm(array)
 
 
 def extract_marker_subset(frame_data, names, marker_indices):
+    """
+    Takes a frame of mocap points, marker names, and a dict that maps to indices and returns the subset of those names
+    Should this be a method of MocapTracker??
+    """
     indices = [marker_indices[name] for name in names]
     return frame_data[indices, :]
 
 
 def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-15):
+    """
+    Defines the hand frame as the origin at the mean of the hand points, the z axis normal to the plane they form and 
+    the x axis the vector to the arm at zero conditions projected onto this plane. It then transforms the hand points
+    into this frame and returns the transform and the transformed hand points
+    :param hand_points: 
+    :param arm_points: 
+    :param zero_thresh: 
+    :return: 
+    """
     origin, normal = best_fitting_plane(hand_points)
     z_axis = unit_vector(normal)
     arm_vec = np.mean(arm_points, axis=0) - origin
@@ -355,6 +423,9 @@ def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-
     return homog_transform, desired_hand_points[:, :3]
 
 
+"""
+These are taken from stack overflow and work pretty well
+"""
 def pca(data, correlation = False, sort = True):
     """ Applies Principal Component Analysis to the data
     
