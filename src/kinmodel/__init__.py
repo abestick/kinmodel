@@ -1,1 +1,1 @@
-from kinmodel import *
+from .kinmodel import *
