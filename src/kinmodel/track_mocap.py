@@ -9,6 +9,7 @@ import sensor_msgs.msg as sensor_msgs
 from std_msgs.msg import Header
 import ukf
 import kinmodel
+from kinmodel.tools import unit_vector
 import numpy.linalg as npla
 from phasespace.mocap_definitions import MocapWrist
 from phasespace.load_mocap import transform_frame, find_homog_trans
@@ -20,7 +21,7 @@ class MocapTracker(object):
     """
 
     def __init__(self, name, mocap_source, state_space_model, base_markers, base_frame_points, marker_indices,
-                 joint_states_topic=None, object_tf_frame=None, new_frame_callback=None):
+                 joint_states_topic=None, object_tf_frame=None, new_frame_callback=None, is_master=False):
         """
         Constructor
         :param name: This name helps when defining coordinate frames in the mocap source so that each tracker is unique
@@ -50,7 +51,7 @@ class MocapTracker(object):
 
         self._estimation_pub = None
         self._tf_pub = None
-        self._callback = new_frame_callback
+        self._callbacks = [new_frame_callback] if new_frame_callback is not None else []
         self.exit = False
 
         if joint_states_topic is not None:
@@ -73,59 +74,50 @@ class MocapTracker(object):
         self._observation = None
         self._covariance = None
         self._squared_residual = None
+        self._is_master = is_master
+        self._slaves = {}
 
-    def _initialize_filter(self, initial_observation, reps=50):
+    def is_master(self):
+        return self._is_master
+
+    def set_master(self, is_master):
+        # If we are changing something
+        if is_master != self._is_master:
+            # update whether we are a master or not
+            self._is_master = is_master
+
+            # in both cases this list should be empty (slaves shouldn't have slaves and new masters don't yet either)
+            self._slaves = {}
+
+    def add_slaves(self, slaves):
         """
-        Runs the filter to converge initial error
-        :param initial_observation: initial measurement vector
-        :param reps: how many cycles to run
+        Adds a list of other trackers as slaves who's step functions will be called whenever this one is.
+        This function checks that the other trackers are slaves and thus is safer than enslave
+        :param slaves: list of trackers with is_master() == False
         :return: 
         """
-        print(initial_observation)
-        for i in range(reps):
-            self.uk_filter.filter(initial_observation)
+        for slave in slaves:
+            assert not slave.is_master(), "You cannot add another master as a slave!"
+            self._slaves[slave.name] = slave
 
-    def _update_outputs(self, i):
+    def enslave(self, others):
         """
-        Calls callbacks, oublishes to topics, and to tf 
-        :param i: the frame count
+        This function takes a list of other trackers and forces them into being slaves, thus perhaps losing links.
+        :param others: list of trackers
         :return: 
         """
-        if self._callback is not None:
-            self._callback(i, self._estimation, covariance=self._covariance,
-                           squared_residual=self._squared_residual)
+        for other in others:
+            other.set_master(False)
+            self._slaves[other.name] = other
 
-        if self._estimation_pub is not None:
-            msg = sensor_msgs.JointState(position=self._estimation.squeeze(),
-                                         header=Header(stamp=rospy.Time.now()))
-            self._estimation_pub.publish(msg)
+    def free(self, name):
+        self._slaves.pop(name)
 
-        # Publish the base frame pose of the flexible object
-        if self._tf_pub is not None:
-            homog = npla.inv(self.mocap_source.get_last_coordinates())
-            mocap_frame_name = self.mocap_source.get_frame_name()
-            if mocap_frame_name is not None:
-                self._tf_pub.sendTransform(homog[0:3, 3],
-                                           tf.transformations.quaternion_from_matrix(homog),
-                                           rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
+    def free_all(self):
+        self._slaves = {}
 
-    def _extract_observation(self, frame):
-        """
-        Converts a mocap frame into a dict of marker names and geometric Points
-        :param frame: mocap frame (n,3)
-        :return: dict of geometric Points
-        """
-        return {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :]))
-                for name in self._marker_indices}
-
-    def _preprocess_measurement(self, observation):
-        """
-        Converts a marker observation into a whatever format the state space's measurement is defined in, this is an
-        identity function if not overloaded
-        :param observation: dict of marker points
-        :return: any format of measurement
-        """
-        return observation
+    def register_callback(self, callback):
+        self._callbacks.append(callback)
 
     def get_marker_indices(self, marker_names):
         """Returns the marker indices for a set of marker names"""
@@ -146,34 +138,113 @@ class MocapTracker(object):
         """Stops the thread"""
         self.exit = True
 
-    def run(self):
+    def run(self, record=False):
         """
         Iterates over the mocap source, applies all processing and filtering to the data and calls the relevant updates 
         """
+
+        estimations = []
+        covariances = []
+        squared_residuals = []
+
         for i, (frame, timestamp) in enumerate(self.mocap_source.iterate(coordinate_frame=self.name)):
 
             if self.exit:
                 break
 
-            # convert frame into observation dict and store
-            self._observation = self._extract_observation(frame)
+            self.step_frame(frame, i)
 
-            # convert observation dict into state space measurement
-            measurement = self._preprocess_measurement(self._observation)
+            if record:
+                estimations.append(self._estimation)
+                covariances.append(self._covariance)
+                squared_residuals.append(self._squared_residual)
 
-            # vectorize the measurement
-            measurement_array = self.state_space_model.vectorize_measurement(measurement)
+        return estimations, covariances, squared_residuals
 
-            # if its our first frame, converge the error in the filter
-            if i == 0:
-                self._initialize_filter(measurement_array)
-                continue
+    def step(self, i=-1):
+        frame, timestamp = self.mocap_source.get_latest_frame()
+        self.step_frame(frame)
+        return self._estimation
 
-            # otherwise store filter output
-            self._estimation, self._covariance, self._squared_residual = self.uk_filter.filter(measurement_array)
+    def step_frame(self, frame, i=-1):
+        for slave in self._slaves.items():
+            slave.step(i)
 
-            # and call the callbacks, publisher's etc
-            self._update_outputs(i)
+        # if its our first frame, converge the error in the filter
+        if i == 0:
+            self._initialize_filter(frame)
+            return
+
+        # otherwise store filter output
+        measurement_array = self._process_frame(frame)
+        self._estimation, self._covariance, self._squared_residual = self.uk_filter.filter(measurement_array)
+
+        # and call the callbacks, publisher's etc
+        self._update_outputs(i)
+
+    def _process_frame(self, frame):
+        # convert frame into observation dict and store
+        self._observation = self._extract_observation(frame)
+
+        # convert observation dict into state space measurement
+        measurement = self._preprocess_measurement(self._observation)
+
+        # vectorize the measurement
+        return self.state_space_model.vectorize_measurement(measurement)
+
+    def _extract_observation(self, frame):
+        """
+        Converts a mocap frame into a dict of marker names and geometric Points
+        :param frame: mocap frame (n,3)
+        :return: dict of geometric Points
+        """
+        return {name: kinmodel.new_geometric_primitive((frame[self._marker_indices[name], :]))
+                for name in self._marker_indices}
+
+    def _preprocess_measurement(self, observation):
+        """
+        Converts a marker observation into a whatever format the state space's measurement is defined in, this is an
+        identity function if not overloaded
+        :param observation: dict of marker points
+        :return: any format of measurement
+        """
+        return observation
+
+    def _update_outputs(self, i):
+        """
+        Calls callbacks, oublishes to topics, and to tf 
+        :param i: the frame count
+        :return: 
+        """
+        for callback in self._callbacks:
+            callback(i, self._estimation, covariance=self._covariance,
+                           squared_residual=self._squared_residual)
+
+        if self._estimation_pub is not None:
+            msg = sensor_msgs.JointState(position=self._estimation.squeeze(),
+                                         header=Header(stamp=rospy.Time.now()))
+            self._estimation_pub.publish(msg)
+
+        # Publish the base frame pose of the flexible object
+        if self._tf_pub is not None:
+            homog = npla.inv(self.mocap_source.get_last_coordinates())
+            mocap_frame_name = self.mocap_source.get_frame_name()
+            if mocap_frame_name is not None:
+                self._tf_pub.sendTransform(homog[0:3, 3],
+                                           tf.transformations.quaternion_from_matrix(homog),
+                                           rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
+
+    def _initialize_filter(self, initial_frame, reps=50):
+        """
+        Runs the filter to converge initial error
+        :param initial_frame: initial frame
+        :param reps: how many cycles to run
+        :return: 
+        """
+        initial_measurement = self._process_frame(initial_frame)
+
+        for i in range(reps):
+            self.uk_filter.filter(initial_measurement)
 
 
 class KinematicTreeTracker(MocapTracker):
@@ -376,11 +447,6 @@ class WristTracker(MocapTracker, MocapWrist):
         #     euler_angles = np.full(3, np.nan)
 
         return {config: euler_angles[i] for i, config in enumerate(self.configs)}
-
-
-def unit_vector(array):
-    """Divides an array by its norm"""
-    return array / npla.norm(array)
 
 
 def extract_marker_subset(frame_data, names, marker_indices):
