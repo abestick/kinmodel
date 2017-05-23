@@ -9,10 +9,11 @@ import sensor_msgs.msg as sensor_msgs
 from std_msgs.msg import Header
 import ukf
 import kinmodel
-from kinmodel.tools import unit_vector
+from .tools import unit_vector
 import numpy.linalg as npla
 from phasespace.mocap_definitions import MocapWrist
 from phasespace.load_mocap import transform_frame, find_homog_trans
+from copy import deepcopy
 
 
 class MocapTracker(object):
@@ -76,6 +77,15 @@ class MocapTracker(object):
         self._squared_residual = None
         self._is_master = is_master
         self._slaves = {}
+        self._state_names = self._unvectorize_estimation().keys()
+
+    def _unvectorize_estimation(self, state_vector=None):
+        if state_vector is None:
+            state_vector = np.zeros(self.state_space_model.state_length())
+        return self.state_space_model.unvectorize_estimation(state_vector, self.name+'_')
+
+    def get_state_names(self):
+        return self._state_names
 
     def is_master(self):
         return self._is_master
@@ -167,17 +177,19 @@ class MocapTracker(object):
         return self._estimation
 
     def step_frame(self, frame, i=-1):
+        print("%s: %d" % (self.name, i))
         for slave in self._slaves.items():
             slave.step(i)
 
         # if its our first frame, converge the error in the filter
         if i == 0:
-            self._initialize_filter(frame)
-            return
+            state_vector, self._covariance, self._squared_residual = self._initialize_filter(frame)
 
-        # otherwise store filter output
-        measurement_array = self._process_frame(frame)
-        self._estimation, self._covariance, self._squared_residual = self.uk_filter.filter(measurement_array)
+        else:
+            # otherwise store filter output
+            state_vector, self._covariance, self._squared_residual = self._filter(frame)
+
+        self._estimation = self._unvectorize_estimation(state_vector)
 
         # and call the callbacks, publisher's etc
         self._update_outputs(i)
@@ -245,6 +257,14 @@ class MocapTracker(object):
 
         for i in range(reps):
             self.uk_filter.filter(initial_measurement)
+        return self.uk_filter.filter(initial_measurement)
+
+    def _filter(self, frame):
+        measurement_array = self._process_frame(frame)
+        return self.uk_filter.filter(measurement_array)
+
+    def clone(self):
+        return deepcopy(self)
 
 
 class KinematicTreeTracker(MocapTracker):

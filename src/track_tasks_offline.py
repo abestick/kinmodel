@@ -28,23 +28,16 @@ def main():
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
     kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
-    all_frames = []
-    all_covariances = []
-    all_residuals = []
-    all_frames1 = []
-    all_covariances1 = []
-    all_residuals1 = []
-    all_frames2 = []
-    all_covariances2 = []
-    all_residuals2 = []
+    object_angles = {}
+    wrist_1_angles = {}
+    wrist_2_angles = {}
 
     def new_frame_callback(i, joint_angles, covariance, squared_residual):
         # frame_tracker.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
         # print(frame_tracker.compute_jacobian('base', 'left_hand'))
         print("0: %d" % i)
-        all_frames.append(joint_angles)
-        all_covariances.append(covariance[:,:,None])
-        all_residuals.append(squared_residual)
+        for joint_name in joint_angles:
+            object_angles[joint_name] = object_angles.get(joint_name, []) + [joint_angles[joint_name]]
 
     object_tracker = KinematicTreeTracker('object', tracker_kin_tree, ukf_mocap, new_frame_callback=new_frame_callback)
 
@@ -59,15 +52,14 @@ def main():
     def new_frame_callback_1(i, joint_angles, covariance, squared_residual):
         # frame_tracker.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
         print("1: %d" % i)
-        all_frames1.append(joint_angles)
-        all_covariances1.append(covariance[:, :, None])
-        all_residuals1.append(squared_residual)
+        for joint_name in joint_angles:
+            wrist_1_angles[joint_name] = wrist_1_angles.get(joint_name, []) + [joint_angles[joint_name]]
 
     def new_frame_callback_2(i, joint_angles, covariance, squared_residual):
         print("2: %d" % i)
-        all_frames2.append(joint_angles)
-        all_covariances2.append(covariance[:, :, None])
-        all_residuals2.append(squared_residual)
+        for joint_name in joint_angles:
+            wrist_2_angles[joint_name] = wrist_2_angles.get(joint_name, []) + [joint_angles[joint_name]]
+
 
     wrist_tracker_1 = WristTracker('wrist1', ukf_mocap, marker_indices_1, reference_frame,
                                    new_frame_callback=new_frame_callback_1)
@@ -81,34 +73,34 @@ def main():
     wrist_tracker_2.run()
     print("Tracker 2 Done!")
 
-    # object_tracker.start().join()
-    ukf_output = np.concatenate(all_frames, axis=1)
-    ukf_covar = np.concatenate(all_covariances, axis=2)
-    ukf_residual = np.array(all_residuals)
-
-    ukf_output1 = np.concatenate(all_frames1, axis=1)
-    ukf_output2 = np.concatenate(all_frames2, axis=1)
-
     # Figure 1 - Mocap xyz trajectories
     fig = plt.figure(figsize=(16,6))
     ax = fig.add_subplot(111)
-    ax.plot(ukf_output.T)#, color='r')
+    # ax.plot(ukf_output.T)#, color='r')
+    for key, value in object_angles.items():
+        ax.plot(value, label=key)
+
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('$\\theta$ (rad)')
+    ax.legend()
 
     # Figure 2 - Mocap xyz trajectories
     fig1 = plt.figure(figsize=(16,6))
     ax1 = fig1.add_subplot(111)
-    ax1.plot(ukf_output1.T)#, color='r')
+    for key, value in wrist_1_angles.items():
+        ax1.plot(value, label=key)
     ax1.set_xlabel('Time (s)')
     ax1.set_ylabel('$\\theta$ (rad)')
+    ax1.legend()
 
     # Figure 3 - Mocap xyz trajectories
     fig2 = plt.figure(figsize=(16,6))
     ax2 = fig2.add_subplot(111)
-    ax2.plot(ukf_output2.T)#, color='r')
+    for key, value in wrist_2_angles.items():
+        ax2.plot(value, label=key)
     ax2.set_xlabel('Time (s)')
     ax2.set_ylabel('$\\theta$ (rad)')
+    ax2.legend()
 
     plt.show()
 

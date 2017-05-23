@@ -782,7 +782,7 @@ class KinematicTree(object):
         return self._root
 
     def compute_error(self, config_dict, feature_obs_dict, vis=False):
-    	# Assumes that all features in feature_obs_dict will be found in the tree
+        # Assumes that all features in feature_obs_dict will be found in the tree
         # Set configuration and compute pox, assuming config_dict maps joint names to float values
         self.set_config(config_dict)
         self._compute_pox()
@@ -928,7 +928,7 @@ class KinematicTreeParamVectorizer(object):
 
         return np.array(vector_list)
 
-    def unvectorize(self, vectorized_params):
+    def unvectorize(self, vectorized_params, prefix=''):
         # Shouldn't touch the tree, should operate on params and the order saved by vectorize()
         # Return config dict list, twists dict, features dict
         vector_ind = 0
@@ -953,22 +953,22 @@ class KinematicTreeParamVectorizer(object):
             # Reconstruct the original data structures
             if desc_tuple[0] == 'config':
                 if self._vectorize['configs']:
-                    theta = vec_value[0]
+                    theta = float(vec_value[0])
                     config_idx = desc_tuple[1][0]
                     name = desc_tuple[1][1]
                     while len(configs) < config_idx + 1:
                         configs.append({})
-                    configs[config_idx][name] = theta
+                    configs[config_idx][prefix+name] = theta
             elif desc_tuple[0] == 'twist':
                 if self._vectorize['twists']:
                     twist = desc_tuple[2](vectorized=vec_value)
                     name = desc_tuple[1]
-                    twists[name] = twist
+                    twists[prefix+name] = twist
             elif desc_tuple[0] == 'feature':
                 if self._vectorize['features']:
                     feature = desc_tuple[2](vectorized=vec_value)
                     name = desc_tuple[1]
-                    features[name] = feature
+                    features[prefix+name] = feature
             else:
                 raise ValueError('Invalid vectorized type: ' + desc_tuple[0])
         return configs, twists, features
@@ -1023,6 +1023,9 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
     def vectorize_measurement(self, feature_obs):
         return self._meas_vectorizer.vectorize(features=feature_obs)[:,None]
+
+    def unvectorize_estimation(self, state_vector, prefix=''):
+        return self._state_vectorizer.unvectorize(state_vector, prefix)[0][0]
 
 
 class WristStateSpaceModel2(StateSpaceModel, MocapWrist):
@@ -1112,6 +1115,8 @@ class WristStateSpaceModel(StateSpaceModel, MocapWrist):
     def vectorize_measurement(self, configs_obs):
         return self._meas_vectorizer.vectorize(configs=[configs_obs])
 
+    def unvectorize_estimation(self, state_vector, prefix=''):
+        return self._state_vectorizer.unvectorize(state_vector, prefix)[0][0]
 
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
