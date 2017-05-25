@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from phasespace.mocap_definitions import MocapWrist
 from tf.transformations import euler_matrix
+from copy import deepcopy
 
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
@@ -239,6 +240,110 @@ class Transform(GeometricPrimitive):
         adj[3:,3:] = self.R()
         adj[3:,:3] = se3.skew(self.p()).dot(self.R())
         return adj
+
+
+class Jacobian(object):
+
+    @staticmethod
+    def from_array(array, row_names, column_names):
+        """
+        Creates a Jacobian from an array and row and column names
+        :param numpy.ndarray array: 2D Matrix of the Jacobian
+        :param row_names: the names of the rows
+        :param column_names: the names of the columns
+        :return: 
+        """
+        assert array.ndim == 2, "array must be 2-dimensional, not of shape %s" % array.shape
+        assert array.shape == (len(row_names), len(column_names)), "Array shape must match length of row_names and " \
+                                                                   "column_names. %s (shape) does not match (%d, %d) " \
+                                                                   "(row and column name lengths)" % \
+                                                                   (array.shape, len(row_names), len(column_names))
+        jacobian = Jacobian([], {})
+        jacobian.matrix = array
+        jacobian.row_names = row_names
+        jacobian.column_names = column_names
+
+        return jacobian
+
+    def __init__(self, row_names, columns):
+        """
+        
+        :param dict columns: 
+        :param list row_names: 
+        """
+        self.matrix = np.empty((len(row_names), len(columns)))
+
+        assert len(set(row_names)) == len(row_names), "Duplicates were found in row_names!"
+
+        self.row_names = row_names
+        self.column_names = []
+
+        for j, (column_name, column) in enumerate(columns.items()):
+            self.column_names.append(column_name)
+            self.matrix[:, j] = np.array(column)
+
+    def _vectorize(self, input_dict):
+        assert set(input_dict) == set(self.column_names)
+        return np.array([input_dict[column] for column in self.column_names])
+
+    def copy(self):
+        return deepcopy(self)
+
+    def reorder(self, row_names=None, column_names=None):
+        if row_names is not None:
+            assert set(row_names) == set(self.row_names), "row_names must contain %s" % self.row_names
+            new_array = np.empty_like(self.matrix)
+
+            for i, row_name in enumerate(row_names):
+                new_array[i, :] = self.matrix[self.row_names.index(row_name)]
+
+            for j, column_name in enumerate(column_names):
+                new_array[:, j] = self.matrix[self.row_names.index(column_name)]
+
+    def transform_right(self, array, column_names):
+        array = array.reshape((array.shape[0], -1))
+        assert len(set(column_names)) == len(column_names) == array.shape[1], "Duplicates were found in column_names!"
+
+        new_one = self.copy()
+        new_one.matrix = new_one.matrix.dot(array)
+        new_one.column_names = column_names
+        return new_one
+
+    def transform_left(self, array, row_names):
+        assert len(set(row_names)) == len(row_names) == array.shape[0], "Duplicates were found in row_names!"
+        new_one = self.copy()
+        new_one.matrix = array.dot(new_one.matrix)
+        new_one.row_names = row_names
+        return new_one
+
+    def dot(self, other):
+        if isinstance(other, np.ndarray):
+            return self.matrix.dot(other)
+
+        else:
+            raise NotImplementedError("dot is not yet implemented for %s." % type(other))
+
+    def __mul__(self, other):
+        if isinstance(other, Jacobian):
+            assert set(other.row_names) == set(self.column_names), "Right multiplicant must have the same rows as the " \
+                                                                   "left multiplicant's columns. \n" \
+                                                                   "Right rows: %s \n" \
+                                                                   "Left columns: %s" % \
+                                                                   (other.row_names, self.column_names)
+
+            other = other.copy()
+            other.reorder(row_names=self.column_names)
+            return self.transform_right(other.matrix, other.column_names)
+
+        elif isinstance(other, dict):
+            other = self._vectorize(other)
+            return self.dot(other)
+
+        elif isinstance(other, np.ndarray):
+            return self.dot(other)
+
+        else:
+            raise NotImplementedError("Multiplication is not yet implemented for %s." % type(other))
 
 
 class Twist(object):

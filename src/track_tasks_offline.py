@@ -81,7 +81,7 @@ def main():
         ax.plot(value, label=key)
 
     ax.set_xlabel('Time (s)')
-    ax.set_ylabel('$\\theta$ (rad)')
+    ax.set_ylabel('Angle (rad)')
     ax.legend()
 
     # Figure 2 - Mocap xyz trajectories
@@ -90,7 +90,7 @@ def main():
     for key, value in wrist_1_angles.items():
         ax1.plot(value, label=key)
     ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('$\\theta$ (rad)')
+    ax1.set_ylabel('Angle (rad)')
     ax1.legend()
 
     # Figure 3 - Mocap xyz trajectories
@@ -98,8 +98,8 @@ def main():
     ax2 = fig2.add_subplot(111)
     for key, value in wrist_2_angles.items():
         ax2.plot(value, label=key)
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('$\\theta$ (rad)')
+    ax2.set_xlabel('Timestep (k)')
+    ax2.set_ylabel('Angle (rad)')
     ax2.legend()
 
     plt.show()
