@@ -298,6 +298,29 @@ class KinematicTreeTracker(MocapTracker):
                                                    marker_indices, joint_states_topic, object_tf_frame,
                                                    new_frame_callback)
 
+        # Create a KinematicTreeExternalFrameTracker which is linked to the config of this tracker
+        # TODO: This is a little hacky - integrate this this more completely
+        tracker_kin_tree = deepcopy(kin_tree)
+        self._frame_tracker = KinematicTreeExternalFrameTracker(tracker_kin_tree, object_tf_frame)
+        def frame_tracker_update(i, joint_angles, covariance, squared_residual):
+            state_names = self.get_state_names()
+            # TODO: Make sure the state names are returned in the order they appear in joint_angles - this won't work otherwise
+            new_config = {state_name:joint_angles[j] for (j, state_name) in enumerate(state_names)}
+            self._frame_tracker.set_config(new_config)
+        self.register_callback(frame_tracker_update)
+
+    def attach_frame(self, *args, **kwargs):
+        return self._frame_tracker.attach_frame(*args, **kwargs)
+
+    def attach_tf_frame(self, *args, **kwargs):
+        return self._frame_tracker.attach_tf_frame(*args, **kwargs)
+
+    def observe_frames(self, *args, **kwargs):
+        return self._frame_tracker.observe_frames(*args, **kwargs)
+
+    def compute_jacobian(self, *args, **kwargs):
+        return self._frame_tracker.compute_jacobian(*args, **kwargs)
+
     def start(self):
         self.exit = False
         reader_thread = threading.Thread(target=self.run)
