@@ -11,8 +11,17 @@ import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from phasespace.mocap_definitions import MocapWrist
-from tf.transformations import euler_matrix
+from tf.transformations import euler_matrix, quaternion_matrix, quaternion_from_matrix
 from copy import deepcopy
+
+
+class abstractclassmethod(classmethod):
+
+    __isabstractmethod__ = True
+
+    def __init__(self, callable):
+        callable.__isabstractmethod__ = True
+        super(abstractclassmethod, self).__init__(callable)
 
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
@@ -63,6 +72,9 @@ def stack(*args, **kwargs):
     return np.stack([arg.homog()[dims] for arg in args])
 
 
+POSE_NAMES = ('x', 'y', 'z', 'qw', 'qx', 'qy', 'qz')
+
+
 class StateSpaceModel(object):
     """
     An abstract class describing the bare bones needed for a state space model to be defined
@@ -109,6 +121,10 @@ class StateSpaceModel(object):
 class GeometricPrimitive(object):
     __metaclass__ = ABCMeta
 
+    @abstractclassmethod
+    def from_dict(cls, dictionary):
+        pass
+
     @abstractmethod
     def homog(self):
         pass
@@ -130,6 +146,10 @@ class GeometricPrimitive(object):
 
     def _json(self):
         return self.homog().squeeze().tolist()
+
+    @abstractmethod
+    def to_dict(self):
+        pass
 
 
 class Feature(object):
@@ -207,6 +227,21 @@ class Transform(GeometricPrimitive):
         .p() - (3,) - translation ndarray
         .R() - (3,3) - rotation ndarray
     """
+    pose_names = POSE_NAMES
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        assert set(cls.pose_names) == set(dictionary)
+        pose = np.array([float(dictionary[pose_name]) for pose_name in cls.pose_names])
+        return cls.from_pose(pose)
+
+    @classmethod
+    def from_pose(cls, pose):
+        homog_array = np.identity(4)
+        homog_array[:, 3] = pose[:3]
+        homog_array[:3, :3] = quaternion_matrix(pose[3:])
+        return cls(homog_array)
+
     def __init__(self, homog_array=None):
         if homog_array is None:
             self._H = np.identity(4)
@@ -234,6 +269,15 @@ class Transform(GeometricPrimitive):
     def R(self):
         return self._H[0:3,0:3]
 
+    def pose(self):
+        pose = np.empty(4)
+        pose[:3] = self.trans().q()
+        pose[3:] = quaternion_from_matrix(self.R())
+        return pose
+
+    def to_dict(self):
+        return dict(zip(self.pose_names, self.pose()))
+
     def adjoint(self):
         adj = np.zeros((6,6))
         adj[:3,:3] = self.R()
@@ -244,8 +288,8 @@ class Transform(GeometricPrimitive):
 
 class Jacobian(object):
 
-    @staticmethod
-    def from_array(array, row_names, column_names):
+    @classmethod
+    def from_array(cls, array, row_names, column_names):
         """
         Creates a Jacobian from an array and row and column names
         :param numpy.ndarray array: 2D Matrix of the Jacobian
@@ -258,82 +302,94 @@ class Jacobian(object):
                                                                    "column_names. %s (shape) does not match (%d, %d) " \
                                                                    "(row and column name lengths)" % \
                                                                    (array.shape, len(row_names), len(column_names))
-        jacobian = Jacobian([], {})
-        jacobian.matrix = array
-        jacobian.row_names = row_names
-        jacobian.column_names = column_names
+        jacobian = cls([], {})
+        jacobian._matrix = array
+        jacobian._row_names = row_names
+        jacobian._column_names = column_names
 
         return jacobian
 
-    def __init__(self, row_names, columns):
+    def __init__(self, columns, row_names=None):
         """
-        
+        Constructor
         :param dict columns: 
         :param list row_names: 
         """
-        self.matrix = np.empty((len(row_names), len(columns)))
+        if row_names is None:
+            row_names = self.pose_names
+
+        self._matrix = np.empty((len(row_names), len(columns)))
 
         assert len(set(row_names)) == len(row_names), "Duplicates were found in row_names!"
 
-        self.row_names = row_names
-        self.column_names = []
+        self._row_names = row_names
+        self._column_names = []
 
         for j, (column_name, column) in enumerate(columns.items()):
-            self.column_names.append(column_name)
-            self.matrix[:, j] = np.array(column)
+            self._column_names.append(column_name)
+            column = np.array(column).flatten()
+            assert len(self._row_names) == len(column), "len(row_names) [%d] does not match column length [%d]" % \
+                                                        (len(row_names), len(column))
+            self._matrix[:, j] = column
 
     def _vectorize(self, input_dict):
-        assert set(input_dict) == set(self.column_names)
-        return np.array([input_dict[column] for column in self.column_names])
+        assert set(input_dict) == set(self._column_names)
+        return np.array([input_dict[column] for column in self._column_names])
 
     def copy(self):
         return deepcopy(self)
 
     def reorder(self, row_names=None, column_names=None):
         if row_names is not None:
-            assert set(row_names) == set(self.row_names), "row_names must contain %s" % self.row_names
-            new_array = np.empty_like(self.matrix)
+            assert set(row_names) == set(self._row_names), "row_names must contain %s" % self._row_names
+            new_array = np.empty_like(self._matrix)
 
             for i, row_name in enumerate(row_names):
-                new_array[i, :] = self.matrix[self.row_names.index(row_name)]
+                new_array[i, :] = self._matrix[self._row_names.index(row_name), :]
+
+            self._matrix = new_array
+
+        if column_names is not None:
+            assert set(column_names) == set(self._column_names), "column_names must contain %s" % self._column_names
+            new_array = np.empty_like(self._matrix)
 
             for j, column_name in enumerate(column_names):
-                new_array[:, j] = self.matrix[self.row_names.index(column_name)]
+                new_array[:, j] = self._matrix[:, self._row_names.index(column_name)]
 
     def transform_right(self, array, column_names):
         array = array.reshape((array.shape[0], -1))
         assert len(set(column_names)) == len(column_names) == array.shape[1], "Duplicates were found in column_names!"
 
         new_one = self.copy()
-        new_one.matrix = new_one.matrix.dot(array)
-        new_one.column_names = column_names
+        new_one._matrix = new_one._matrix.dot(array)
+        new_one._column_names = column_names
         return new_one
 
     def transform_left(self, array, row_names):
         assert len(set(row_names)) == len(row_names) == array.shape[0], "Duplicates were found in row_names!"
         new_one = self.copy()
-        new_one.matrix = array.dot(new_one.matrix)
-        new_one.row_names = row_names
+        new_one._matrix = array.dot(new_one._matrix)
+        new_one._row_names = row_names
         return new_one
 
     def dot(self, other):
         if isinstance(other, np.ndarray):
-            return self.matrix.dot(other)
+            return self._matrix.dot(other)
 
         else:
             raise NotImplementedError("dot is not yet implemented for %s." % type(other))
 
     def __mul__(self, other):
         if isinstance(other, Jacobian):
-            assert set(other.row_names) == set(self.column_names), "Right multiplicant must have the same rows as the " \
+            assert set(other._row_names) == set(self._column_names), "Right multiplicant must have the same rows as the " \
                                                                    "left multiplicant's columns. \n" \
                                                                    "Right rows: %s \n" \
                                                                    "Left columns: %s" % \
-                                                                   (other.row_names, self.column_names)
+                                                                     (other._row_names, self._column_names)
 
             other = other.copy()
-            other.reorder(row_names=self.column_names)
-            return self.transform_right(other.matrix, other.column_names)
+            other.reorder(row_names=self._column_names)
+            return self.transform_right(other._matrix, other._column_names)
 
         elif isinstance(other, dict):
             other = self._vectorize(other)
@@ -345,6 +401,99 @@ class Jacobian(object):
         else:
             raise NotImplementedError("Multiplication is not yet implemented for %s." % type(other))
 
+    def row_names(self):
+        return self._row_names
+
+    def column_names(self):
+        return self._column_names
+
+    def J(self):
+        return self._matrix.copy()
+
+    def subset(self, row_names=None, column_names=None):
+        if row_names is None:
+            row_names = self._row_names
+            row_indices = slice(None)
+
+        else:
+            try:
+                row_indices = [self._row_names.index(row_name) for row_name in row_names]
+
+            except ValueError as e:
+                raise ValueError("row_names argument must contain a subset of this Jacobian's row_names.\n"
+                                 "argument row_names: %s\n"
+                                 "object row_names: %s\n"
+                                 "mismatch: %s" % (row_names, self._row_names, e.message))
+
+        if column_names is None:
+            column_names = self._column_names
+            column_indices = slice(None)
+
+        try:
+            column_indices = [self._column_names.index(row_name) for row_name in column_names]
+
+        except ValueError as e:
+            raise ValueError("column_names argument must contain a subset of this Jacobian's column_names.\n"
+                             "argument column_names: %s\n"
+                             "object column_names: %s\n"
+                             "mismatch: %s" % (column_names, self._column_names, e.message))
+
+        new_jac = self.copy()
+        new_jac._matrix = new_jac._matrix[row_indices, column_indices]
+        new_jac._row_names = list(row_names)
+        new_jac._column_names = list(column_names)
+
+    def pinv(self):
+        pinv_array = la.pinv(self._matrix)
+        return InverseJacobian.from_array(pinv_array, self._column_names, self._row_names)
+
+    def hstack(self, other, *args):
+        """
+        Stacks Jacobians horizontally
+        :param Jacobian other: 
+        :return: 
+        """
+
+        if other is None:
+            return self.copy()
+
+        assert set(self._row_names) == set(other._row_names), "Jacobians must have the same row names!"
+        new_one = other.copy()
+        new_one.reorder(row_names=self._row_names)
+        new_one._matrix = np.hstack((self._matrix, new_one._matrix))
+        new_one._column_names = self._column_names + new_one._column_names
+
+        if len(args) == 0:
+            return new_one
+
+        else:
+            return new_one.hstack(args[0], args[1:])
+
+    def vstack(self, other, *args):
+        """
+        Stacks Jacobians horizontally
+        :param Jacobian other: 
+        :return: 
+        """
+
+        if other is None:
+            return self.copy()
+
+        assert set(self._row_names) == set(other._row_names), "Jacobians must have the same column names!"
+        new_one = other.copy()
+        new_one.reorder(column_names=self._column_names)
+        new_one._matrix = np.vstack((self._matrix, new_one._matrix))
+        new_one._row_names = self._row_names + new_one._row_names
+
+        if len(args) == 0:
+            return new_one
+
+        else:
+            return new_one.vstack(args[0], args[1:])
+
+
+class InverseJacobian(Jacobian):
+    pass
 
 class Twist(object):
     """ xi = Twist(...)  element of se(3)
@@ -412,6 +561,20 @@ class Rotation(GeometricPrimitive):
         .R() - (3,3) - rotation matrix ndarray
         .homog() - (4,4) - homogeneous coordinates ndarray (for a pure rotation)
     """
+
+    quaternion_names = POSE_NAMES[3:]
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        quaternion = np.array([dictionary[quaternion_name] for quaternion_name in cls.quaternion_names])
+        return cls.from_quaternion(quaternion)
+
+    @classmethod
+    def from_quaternion(cls, quaternion):
+        homog_array = np.identity(4)
+        homog_array[:3, :3] = quaternion_matrix(quaternion)
+        return cls(homog_array)
+
     def __init__(self, homog_array=None):
         if homog_array is None:
             self._R = np.identity(3)
@@ -428,6 +591,12 @@ class Rotation(GeometricPrimitive):
         homog_matrix[0:3,0:3] = self._R
         return homog_matrix
 
+    def quaternion(self):
+        return quaternion_from_matrix(self.R())
+
+    def to_dict(self):
+        return dict(zip(self.quaternion_names, self.quaternion()))
+
 
 class Vector(GeometricPrimitive):
     """ x = Vector(...)  translation in R^3
@@ -435,6 +604,22 @@ class Vector(GeometricPrimitive):
         .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
         .q() - (3,) - cartesian coordinates ndarray
     """
+
+    cartesian_names = POSE_NAMES[:3]
+
+    @classmethod
+    def from_cartesian(cls, cartesian):
+        return cls(np.append(cartesian, 0))
+
+    @classmethod
+    def from_point(cls, point):
+        return cls.from_cartesian(point.q())
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
+        return cls(homog_array)
+
     def __init__(self, homog_array=None):
         if homog_array is None:
             self._H = np.zeros(4)
@@ -452,6 +637,9 @@ class Vector(GeometricPrimitive):
     def norm(self):
         return la.norm(self.q())
 
+    def to_dict(self):
+        return dict(zip(self.cartesian_names, self.q()))
+
 
 class Point(GeometricPrimitive):
     """ x = Point(...)  point in R^3
@@ -459,6 +647,22 @@ class Point(GeometricPrimitive):
         .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
         .q() - (3,) - cartesian coordinates ndarray
     """
+
+    cartesian_names = POSE_NAMES[:3]
+
+    @classmethod
+    def from_cartesian(cls, cartesian):
+        return cls(np.append(cartesian, 1))
+
+    @classmethod
+    def from_vector(cls, vector):
+        return cls.from_cartesian(vector.q())
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
+        return cls.from_cartesian(homog_array)
+
     def __init__(self, homog_array=None, vectorized=None):
         if vectorized is not None:
             self._H = np.concatenate((vectorized, np.ones((1,))))
@@ -487,6 +691,9 @@ class Point(GeometricPrimitive):
 
     def vectorize(self):
         return self._H[:3]
+
+    def to_dict(self):
+        return dict(zip(self.cartesian_names, self.q()))
 
 
 def obj_to_joint(orig_obj):
@@ -769,6 +976,21 @@ class KinematicTree(object):
                 self.get_config(root=child, config=config)
         return config
 
+    def rename_configs(self, name_map=None, prefix='', suffix='', root=None):
+
+        if root is None:
+            root = self._root
+
+        if name_map is None:
+            root.name = prefix + root.name + suffix
+
+        elif root.name in name_map:
+            root.name = prefix + name_map[root.name] + suffix
+
+        if hasattr(root, 'children'):
+            for child in root.children:
+                self.rename_configs(name_map=name_map, prefix=prefix, suffix=suffix, root=child)
+
     def _compute_pox(self, root=None, parent_pox=None):
         if self._pox_stale or (root is not None):
             self._pox_stale = False
@@ -982,6 +1204,9 @@ class KinematicTree(object):
 
         return final_configs, final_twists, final_features
 
+    def copy(self):
+        return deepcopy(self)
+
 
 class KinematicTreeParamVectorizer(object):
     def __init__(self):
@@ -1093,6 +1318,7 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
         self._meas_vectorizer = KinematicTreeParamVectorizer()
         self._meas_vectorizer.vectorize(features=self._tree.get_features())
         self._state_length = len(initial_config)
+        self._state_names = initial_config.keys()
 
     def measurement_model(self, state_vector):
         """Returns a vectorized observation of predicted feature poses given state=state_vector.

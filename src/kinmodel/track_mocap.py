@@ -77,15 +77,18 @@ class MocapTracker(object):
         self._squared_residual = None
         self._is_master = is_master
         self._slaves = {}
-        self._state_names = self._unvectorize_estimation().keys()
 
-    def _unvectorize_estimation(self, state_vector=None):
+    def _unvectorize_estimation(self, state_vector=None, prefix=None):
         if state_vector is None:
             state_vector = np.zeros(self.state_space_model.state_length())
-        return self.state_space_model.unvectorize_estimation(state_vector, self.name+'_')
 
-    def get_state_names(self):
-        return self._state_names
+        if prefix is None:
+            prefix = self.name + '_'
+        return self.state_space_model.unvectorize_estimation(state_vector, prefix)
+
+    def get_state_names(self, raw=False):
+        prefix = '' if raw else None
+        return self._unvectorize_estimation(prefix=prefix).keys()
 
     def is_master(self):
         return self._is_master
@@ -298,28 +301,18 @@ class KinematicTreeTracker(MocapTracker):
                                                    marker_indices, joint_states_topic, object_tf_frame,
                                                    new_frame_callback)
 
-        # Create a KinematicTreeExternalFrameTracker which is linked to the config of this tracker
-        # TODO: This is a little hacky - integrate this this more completely
-        tracker_kin_tree = deepcopy(kin_tree)
-        self._frame_tracker = KinematicTreeExternalFrameTracker(tracker_kin_tree, object_tf_frame)
-        def frame_tracker_update(i, joint_angles, covariance, squared_residual):
-            state_names = self.get_state_names()
-            # TODO: Make sure the state names are returned in the order they appear in joint_angles - this won't work otherwise
-            new_config = {state_name:joint_angles[j] for (j, state_name) in enumerate(state_names)}
-            self._frame_tracker.set_config(new_config)
-        self.register_callback(frame_tracker_update)
+    # TODO: delete
+    def get_observables(self, estimation=None):
+        if estimation is None:
+            estimation = self._estimation
+        self._frame_tracker.set_config(estimation)
+        observables = {}
+        frames = self.observe_frames()
+        for frame in frames:
+            for element, value in frames[frame].to_dict().items():
+                observables[frame + '_' + element] = value
 
-    def attach_frame(self, *args, **kwargs):
-        return self._frame_tracker.attach_frame(*args, **kwargs)
-
-    def attach_tf_frame(self, *args, **kwargs):
-        return self._frame_tracker.attach_tf_frame(*args, **kwargs)
-
-    def observe_frames(self, *args, **kwargs):
-        return self._frame_tracker.observe_frames(*args, **kwargs)
-
-    def compute_jacobian(self, *args, **kwargs):
-        return self._frame_tracker.compute_jacobian(*args, **kwargs)
+        return observables
 
     def start(self):
         self.exit = False
@@ -340,6 +333,21 @@ class KinematicTreeExternalFrameTracker(object):
         self._attached_tf_frame_names = []  # All attached tf frames - update during an _update() call
         self._tf_pub = tf.TransformBroadcaster()
         self._tf_listener = tf.TransformListener()
+        self.observation_groups = {} # frame observations
+
+    def connect_tracker(self, tracker, config_map=None):
+        """
+        
+        :param MocapTracker tracker: the tracker that will provide the values of some of the configs
+        :param dict config_map: An optional dict which maps the raw kinematic tree joint names to the tracker outputs.
+                When this is not set, it defaults to mapping the non-prefixed state outputs to the prefixed outputs
+        :return: 
+        """
+        if config_map is None:
+            config_map = dict(zip(tracker.get_state_names(raw=True), tracker.get_state_names()))
+
+        self._kin_tree.rename_configs(config_map)
+
 
     def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
         # Attach a static frame to the tree
@@ -389,7 +397,9 @@ class KinematicTreeExternalFrameTracker(object):
             external_frame_dict[frame_name] = observations[frame_name]
         return external_frame_dict
 
-    def compute_jacobian(self, base_frame_name, manip_name_frame):
+    def compute_jacobian(self, base_frame_name, manip_name_frame, joint_angles_dict):
+        if joint_angles_dict is not None:
+            self.set_config(joint_angles_dict)
         self._update()
         return self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame)
 
@@ -421,6 +431,38 @@ class KinematicTreeExternalFrameTracker(object):
                                        tf.transformations.quaternion_from_matrix(obs),
                                        rospy.Time.now(), frame_name, self._base_frame_name)
 
+    def get_observables(self, configs=None):
+        if configs is not None:
+            self.set_config(configs)
+        observables = {}
+        frames = self.observe_frames()
+        for frame in frames:
+            for element, value in frames[frame].to_dict().items():
+                observables[frame + '_' + element] = value
+
+        return observables
+
+    def jacobian_groups(self):
+        groups = {'configs': self._kin_tree.get_joints().keys()}
+        for frame_name in self._attached_frame_names:
+            groups[frame_name] = [frame_name + '_' + element for element in kinmodel.POSE_NAMES]
+
+        return groups
+
+    def partial_derivative(self, output_group, input_group, configs):
+        if output_group == input_group:
+            length = len(self._kin_tree.get_joints()) if output_group == 'configs' else 7
+            return np.identity(length)
+
+        elif input_group == 'configs':
+            return self.compute_jacobian('base', output_group, configs)
+
+        elif output_group == 'configs':
+            return self.compute_jacobian('base', input_group, configs).pinv()
+
+        else:
+            return self.compute_jacobian('base', output_group, configs) * \
+                   self.compute_jacobian('base', input_group, configs).pinv()
 
 class WristTracker(MocapTracker, MocapWrist):
     """
@@ -533,7 +575,7 @@ def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-
 
 
 """
-These are taken from stack overflow and work pretty well
+These are taken from stack overflow and works pretty well
 """
 def pca(data, correlation = False, sort = True):
     """ Applies Principal Component Analysis to the data
