@@ -325,15 +325,25 @@ class KinematicTreeTracker(MocapTracker):
 
 
 class KinematicTreeExternalFrameTracker(object):
-    def __init__(self, kin_tree, base_tf_frame_name):
+    def __init__(self, kin_tree, base_tf_frame_name=None):
         self._kin_tree = kin_tree
         self._base_frame_name = base_tf_frame_name
         self._tf_pub_frame_names = []  # Frame names to publish on tf after an _update() call
         self._attached_frame_names = []  # All attached static frames
         self._attached_tf_frame_names = []  # All attached tf frames - update during an _update() call
+        self.observation_groups = {} # frame observations
+
+        if base_tf_frame_name is not None:
+            self.init_tf(base_tf_frame_name)
+
+        else:
+            self._tf_pub = None
+            self._tf_listener = None
+
+    def init_tf(self, base_tf_frame_name):
+        self._base_frame_name = base_tf_frame_name
         self._tf_pub = tf.TransformBroadcaster()
         self._tf_listener = tf.TransformListener()
-        self.observation_groups = {} # frame observations
 
     def connect_tracker(self, tracker, config_map=None):
         """
@@ -347,7 +357,6 @@ class KinematicTreeExternalFrameTracker(object):
             config_map = dict(zip(tracker.get_state_names(raw=True), tracker.get_state_names()))
 
         self._kin_tree.rename_configs(config_map)
-
 
     def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
         # Attach a static frame to the tree
@@ -397,7 +406,7 @@ class KinematicTreeExternalFrameTracker(object):
             external_frame_dict[frame_name] = observations[frame_name]
         return external_frame_dict
 
-    def compute_jacobian(self, base_frame_name, manip_name_frame, joint_angles_dict):
+    def compute_jacobian(self, base_frame_name, manip_name_frame, joint_angles_dict=None):
         if joint_angles_dict is not None:
             self.set_config(joint_angles_dict)
         self._update()
@@ -443,26 +452,42 @@ class KinematicTreeExternalFrameTracker(object):
         return observables
 
     def jacobian_groups(self):
+        """
+        :return: A dict mapping frame names to their element_wise scalar state names and 'configs' to joint names
+        """
         groups = {'configs': self._kin_tree.get_joints().keys()}
         for frame_name in self._attached_frame_names:
             groups[frame_name] = [frame_name + '_' + element for element in kinmodel.POSE_NAMES]
 
         return groups
 
-    def partial_derivative(self, output_group, input_group, configs):
+    def partial_derivative(self, output_group, input_group, configs=None):
+        """
+        Calculates the partial derivative between two groups of states
+        :param output_group: the name of the group whose states are the output vector to the function
+        :param input_group: the name of the group whose states are the input vector to the function
+        :param configs: the joint angles with which to calculate this partial derivative
+        :return: 
+        """
+
+        # If the groups are the same, return the identity
         if output_group == input_group:
             length = len(self._kin_tree.get_joints()) if output_group == 'configs' else 7
             return np.identity(length)
 
+        # If the input group is the configs group, return the corresponding jacobian
         elif input_group == 'configs':
             return self.compute_jacobian('base', output_group, configs)
 
+        # If the output group is the configs group, return the corresponding inverse jacobian
         elif output_group == 'configs':
             return self.compute_jacobian('base', input_group, configs).pinv()
 
+        # If both groups are poses, use the chain rule to chain the corresponding jacobian and inverse jacobian
         else:
             return self.compute_jacobian('base', output_group, configs) * \
                    self.compute_jacobian('base', input_group, configs).pinv()
+
 
 class WristTracker(MocapTracker, MocapWrist):
     """
