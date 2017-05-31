@@ -351,6 +351,8 @@ class KinematicTreeExternalFrameTracker(object):
 
     def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
         # Attach a static frame to the tree
+        self._kin_tree._pox_stale = True
+        self._kin_tree._dpox_stale = True
         joints = self._kin_tree.get_joints()
         if pose is None:
             # No pose specified, set to mean position of all other Point children of this joint

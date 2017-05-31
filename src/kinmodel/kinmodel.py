@@ -230,8 +230,8 @@ class Transform(GeometricPrimitive):
     """
     pose_names = POSE_NAMES
     transform_names = TRANSFORM_NAMES
-    element_names = {'quaternion': pose_names,
-                     'euler': transform_names}
+    conventions = {'quaternion': pose_names,
+                   'euler': transform_names}
 
     @classmethod
     def from_dict(cls, dictionary, convention='euler'):
@@ -289,7 +289,7 @@ class Transform(GeometricPrimitive):
         return pose
 
     def to_dict(self, convention='euler'):
-        return dict(zip(self.pose_names, self.pose(convention)))
+        return dict(zip(self.conventions[convention], self.pose(convention)))
 
     def adjoint(self):
         adj = np.zeros((6,6))
@@ -474,8 +474,6 @@ class Jacobian(object):
                              "argument column_names: %s\n"
                              "object column_names: %s\n"
                              "mismatch: %s" % (column_names, self._column_names, e.message))
-
-        print(row_indices, column_indices)
 
         new_jac = self.copy()
         new_jac._matrix = new_jac._matrix[row_indices, :]
