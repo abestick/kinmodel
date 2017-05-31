@@ -11,7 +11,7 @@ import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from phasespace.mocap_definitions import MocapWrist
-from tf.transformations import euler_matrix, quaternion_matrix, quaternion_from_matrix
+from tf.transformations import euler_matrix, quaternion_matrix, quaternion_from_matrix, euler_from_matrix
 from copy import deepcopy
 
 
@@ -73,6 +73,7 @@ def stack(*args, **kwargs):
 
 
 POSE_NAMES = ('x', 'y', 'z', 'qw', 'qx', 'qy', 'qz')
+TRANSFORM_NAMES = ('x', 'y', 'z', 'roll', 'pitch', 'yaw')
 
 
 class StateSpaceModel(object):
@@ -228,11 +229,15 @@ class Transform(GeometricPrimitive):
         .R() - (3,3) - rotation ndarray
     """
     pose_names = POSE_NAMES
+    transform_names = TRANSFORM_NAMES
+    element_names = {'quaternion': pose_names,
+                     'euler': transform_names}
 
     @classmethod
-    def from_dict(cls, dictionary):
-        assert set(cls.pose_names) == set(dictionary)
-        pose = np.array([float(dictionary[pose_name]) for pose_name in cls.pose_names])
+    def from_dict(cls, dictionary, convention='euler'):
+        element_names = cls.element_names[convention]
+        assert set(element_names) == set(dictionary)
+        pose = np.array([float(dictionary[pose_name]) for pose_name in element_names])
         return cls.from_pose(pose)
 
     @classmethod
@@ -269,14 +274,22 @@ class Transform(GeometricPrimitive):
     def R(self):
         return self._H[0:3,0:3]
 
-    def pose(self):
-        pose = np.empty(4)
+    def pose(self, convention='euler'):
+        pose = np.empty(6 + int(convention == 'quaternion'))
         pose[:3] = self.trans().q()
-        pose[3:] = quaternion_from_matrix(self.R())
+        if convention == 'quaternion':
+            pose[3:] = quaternion_from_matrix(self.R())
+
+        elif convention == 'euler':
+            pose[3:] = euler_from_matrix(self.R())
+
+        else:
+            raise NotImplementedError('Convention %s not yet implemented.' % convention)
+
         return pose
 
-    def to_dict(self):
-        return dict(zip(self.pose_names, self.pose()))
+    def to_dict(self, convention='euler'):
+        return dict(zip(self.pose_names, self.pose(convention)))
 
     def adjoint(self):
         adj = np.zeros((6,6))
@@ -302,21 +315,40 @@ class Jacobian(object):
                                                                    "column_names. %s (shape) does not match (%d, %d) " \
                                                                    "(row and column name lengths)" % \
                                                                    (array.shape, len(row_names), len(column_names))
-        jacobian = cls([], {})
+        jacobian = cls({}, [])
         jacobian._matrix = array
         jacobian._row_names = row_names
         jacobian._column_names = column_names
 
         return jacobian
 
-    def __init__(self, columns, row_names=None):
+    @classmethod
+    def hstack(cls, jacobians):
+        return jacobians[0].append_horizontally(*jacobians[1:])
+
+    @classmethod
+    def vstack(cls, jacobians):
+        return jacobians[0].append_vertically(*jacobians[1:])
+
+    @classmethod
+    def zeros(cls, row_names, column_names):
+        return cls.from_array(np.zeros((len(row_names), len(column_names))), row_names, column_names)
+
+    @classmethod
+    def identity(cls, names):
+        return cls.from_array(np.identity(len(names)), names, names)
+
+    def __init__(self, columns, row_names=None, column_names=None):
         """
         Constructor
         :param dict columns: 
         :param list row_names: 
         """
         if row_names is None:
-            row_names = self.pose_names
+            row_names = TRANSFORM_NAMES
+
+        if column_names is None:
+            column_names = columns.keys()
 
         self._matrix = np.empty((len(row_names), len(columns)))
 
@@ -325,7 +357,8 @@ class Jacobian(object):
         self._row_names = row_names
         self._column_names = []
 
-        for j, (column_name, column) in enumerate(columns.items()):
+        for j, column_name in enumerate(column_names):
+            column = columns[column_name]
             self._column_names.append(column_name)
             column = np.array(column).flatten()
             assert len(self._row_names) == len(column), "len(row_names) [%d] does not match column length [%d]" % \
@@ -354,7 +387,11 @@ class Jacobian(object):
             new_array = np.empty_like(self._matrix)
 
             for j, column_name in enumerate(column_names):
-                new_array[:, j] = self._matrix[:, self._row_names.index(column_name)]
+                new_array[:, j] = self._matrix[:, self._column_names.index(column_name)]
+
+            self._matrix = new_array
+
+        return self
 
     def transform_right(self, array, column_names):
         array = array.reshape((array.shape[0], -1))
@@ -438,16 +475,20 @@ class Jacobian(object):
                              "object column_names: %s\n"
                              "mismatch: %s" % (column_names, self._column_names, e.message))
 
+        print(row_indices, column_indices)
+
         new_jac = self.copy()
-        new_jac._matrix = new_jac._matrix[row_indices, column_indices]
+        new_jac._matrix = new_jac._matrix[row_indices, :]
+        new_jac._matrix = new_jac._matrix[:, column_indices]
         new_jac._row_names = list(row_names)
         new_jac._column_names = list(column_names)
+        return new_jac
 
     def pinv(self):
         pinv_array = la.pinv(self._matrix)
         return InverseJacobian.from_array(pinv_array, self._column_names, self._row_names)
 
-    def hstack(self, other, *args):
+    def append_horizontally(self, other, *args):
         """
         Stacks Jacobians horizontally
         :param Jacobian other: 
@@ -467,9 +508,9 @@ class Jacobian(object):
             return new_one
 
         else:
-            return new_one.hstack(args[0], args[1:])
+            return new_one.append_horizontally(args[0], args[1:])
 
-    def vstack(self, other, *args):
+    def append_vertically(self, other, *args):
         """
         Stacks Jacobians horizontally
         :param Jacobian other: 
@@ -489,7 +530,27 @@ class Jacobian(object):
             return new_one
 
         else:
-            return new_one.vstack(args[0], args[1:])
+            return new_one.append_vertically(args[0], args[1:])
+
+    def pad(self, row_names=None, column_names=None):
+        if row_names is not None:
+            row_names = [row_name for row_name in row_names if row_name not in self._row_names]
+            row_padded = self.append_vertically(Jacobian.zeros(row_names, self._column_names))
+        else:
+            row_padded = self.copy()
+
+        if column_names is not None:
+            column_names = [column_name for column_name in column_names if column_name not in self._column_names]
+            return row_padded.append_horizontally(Jacobian.zeros(row_padded._row_names, column_names))
+
+        else:
+            return row_padded
+
+    def __str__(self):
+        return 'columns: ' + str(self._column_names) + '\n' + 'rows: ' + str(self._row_names) + '\n' + str(self._matrix)
+
+    def __repr__(self):
+        return self.__str__()
 
 
 class InverseJacobian(Jacobian):
@@ -749,12 +810,12 @@ class IKSolver(object):
             for weight in weights:
                 self.objective, self.jacobian = self._set_cost_functions(weight)
                 if result is None:
-                    result = opt.minimize(self.objective, init_config, method='BFGS', 
+                    result = scipy.optimize.minimize(self.objective, init_config, method='BFGS',
                               jac=self.jacobian, options={'gtol':JAC_TOL})
                     # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
                     #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
                 else:
-                    result = opt.minimize(self.objective, result.x, method='BFGS', 
+                    result = scipy.optimize.minimize(self.objective, result.x, method='BFGS', 
                               jac=self.jacobian, options={'gtol':JAC_TOL})
                     # result = opt.fmin_bfgs(self.objective, result.x, method='BFGS', 
                     #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
@@ -766,7 +827,7 @@ class IKSolver(object):
         #If we're not weighting the constraint costs, just run once
         else:
             self.objective, self.jacobian = self._set_cost_functions()
-            result = opt.minimize(self.objective, init_config, method='BFGS', 
+            result = scipy.optimize.minimize(self.objective, init_config, method='BFGS', 
                               jac=self.jacobian, options={'gtol':JAC_TOL})
             # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
             #                   fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)

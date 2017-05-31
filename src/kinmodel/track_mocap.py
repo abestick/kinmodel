@@ -12,7 +12,7 @@ import kinmodel
 from .tools import unit_vector
 import numpy.linalg as npla
 from phasespace.mocap_definitions import MocapWrist
-from phasespace.load_mocap import transform_frame, find_homog_trans
+from phasespace.load_mocap import transform_frame, find_homog_trans, MocapStream
 from copy import deepcopy
 
 
@@ -68,8 +68,11 @@ class MocapTracker(object):
                                                    P0=np.identity(self.state_space_model.state_length()) * 0.25,
                                                    Q=np.pi / 2 / 80, R=5e-3)
 
-        # setup a coordinate frame for the system in the source (maybe we need to check for uniqueness)
-        self.mocap_source.set_coordinates(self.name, self.base_indices, self.base_frame_points, mode='time_varying')
+        self._last_frame_stream = MocapStream(self.mocap_source, max_buffer_len=1)
+
+        # setup the coordinate frame for the system in the last frame stream
+        self._last_frame_stream.set_coordinates(self.base_indices, self.base_frame_points, mode='time_varying')
+        self.mocap_source.register_buffer(self._last_frame_stream)
 
         self._estimation = None
         self._observation = None
@@ -78,17 +81,15 @@ class MocapTracker(object):
         self._is_master = is_master
         self._slaves = {}
 
-    def _unvectorize_estimation(self, state_vector=None, prefix=None):
+    def _unvectorize_estimation(self, state_vector=None):
         if state_vector is None:
             state_vector = np.zeros(self.state_space_model.state_length())
 
-        if prefix is None:
-            prefix = self.name + '_'
-        return self.state_space_model.unvectorize_estimation(state_vector, prefix)
+        return self.state_space_model.unvectorize_estimation(state_vector)
 
     def get_state_names(self, raw=False):
         prefix = '' if raw else None
-        return self._unvectorize_estimation(prefix=prefix).keys()
+        return self._unvectorize_estimation().keys()
 
     def is_master(self):
         return self._is_master
@@ -160,7 +161,10 @@ class MocapTracker(object):
         covariances = []
         squared_residuals = []
 
-        for i, (frame, timestamp) in enumerate(self.mocap_source.iterate(coordinate_frame=self.name)):
+        stream = self.mocap_source.get_stream()
+        stream.set_coordinates(self.base_indices, self.base_frame_points, mode='time_varying')
+
+        for i, (frame, timestamp) in enumerate(stream):
 
             if self.exit:
                 break
@@ -172,15 +176,15 @@ class MocapTracker(object):
                 covariances.append(self._covariance)
                 squared_residuals.append(self._squared_residual)
 
+        self.mocap_source.unregister_buffer(stream)
         return estimations, covariances, squared_residuals
 
     def step(self, i=-1):
         frame, timestamp = self.mocap_source.get_latest_frame()
-        self.step_frame(frame)
+        self.step_frame(frame, i)
         return self._estimation
 
     def step_frame(self, frame, i=-1):
-        print("%s: %d" % (self.name, i))
         for slave in self._slaves.items():
             slave.step(i)
 
@@ -301,19 +305,6 @@ class KinematicTreeTracker(MocapTracker):
                                                    marker_indices, joint_states_topic, object_tf_frame,
                                                    new_frame_callback)
 
-    # TODO: delete
-    def get_observables(self, estimation=None):
-        if estimation is None:
-            estimation = self._estimation
-        self._frame_tracker.set_config(estimation)
-        observables = {}
-        frames = self.observe_frames()
-        for frame in frames:
-            for element, value in frames[frame].to_dict().items():
-                observables[frame + '_' + element] = value
-
-        return observables
-
     def start(self):
         self.exit = False
         reader_thread = threading.Thread(target=self.run)
@@ -331,7 +322,7 @@ class KinematicTreeExternalFrameTracker(object):
         self._tf_pub_frame_names = []  # Frame names to publish on tf after an _update() call
         self._attached_frame_names = []  # All attached static frames
         self._attached_tf_frame_names = []  # All attached tf frames - update during an _update() call
-        self.observation_groups = {} # frame observations
+        self._joint_names = self._kin_tree.get_joints().keys()
 
         if base_tf_frame_name is not None:
             self.init_tf(base_tf_frame_name)
@@ -410,7 +401,11 @@ class KinematicTreeExternalFrameTracker(object):
         if joint_angles_dict is not None:
             self.set_config(joint_angles_dict)
         self._update()
-        return self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame)
+        row_names = [manip_name_frame + '_' + element for element in kinmodel.TRANSFORM_NAMES]
+        minimial_jacobian = kinmodel.Jacobian(self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame),
+                                              row_names)
+
+        return minimial_jacobian.pad(column_names=self._joint_names).reorder(column_names=self._joint_names)
 
     def _update(self):
         # Get the current and zero-config feature observations
@@ -433,12 +428,13 @@ class KinematicTreeExternalFrameTracker(object):
                 print('Lookup failed for TF frame: ' + frame_name)
         self._kin_tree.set_features(updated_features)
 
-        # Observe and publish specified static features
-        for frame_name in self._tf_pub_frame_names:
-            obs = feature_obs[frame_name].homog()
-            self._tf_pub.sendTransform(obs[0:3, 3],
-                                       tf.transformations.quaternion_from_matrix(obs),
-                                       rospy.Time.now(), frame_name, self._base_frame_name)
+        if self._tf_pub is not None:
+            # Observe and publish specified static features
+            for frame_name in self._tf_pub_frame_names:
+                obs = feature_obs[frame_name].homog()
+                self._tf_pub.sendTransform(obs[0:3, 3],
+                                           tf.transformations.quaternion_from_matrix(obs),
+                                           rospy.Time.now(), frame_name, self._base_frame_name)
 
     def get_observables(self, configs=None):
         if configs is not None:
@@ -487,6 +483,30 @@ class KinematicTreeExternalFrameTracker(object):
         else:
             return self.compute_jacobian('base', output_group, configs) * \
                    self.compute_jacobian('base', input_group, configs).pinv()
+
+    def full_partial_derivative(self, coordinate_frame, configs=None):
+
+        if configs is not None:
+            self.set_config(configs)
+
+        row_names = list(self._joint_names)
+
+        jacobians = [np.identity(len(self._joint_names))]
+        pinv_jacobians = [np.identity(len(self._joint_names))]
+
+        for frame in self._attached_frame_names:
+            if frame == coordinate_frame:
+                continue
+            jacobian = self.compute_jacobian(coordinate_frame, frame)
+            jacobians.append(jacobian.J())
+            pinv_jacobians.append(jacobian.pinv().J())
+            row_names.extend(jacobian.row_names())
+
+        column_names = list(row_names)
+        jac_column_block = np.concatenate(jacobians, axis=0)
+        pinv_jac_row_block = np.concatenate(pinv_jacobians, axis=1)
+
+        return kinmodel.Jacobian.from_array(np.dot(jac_column_block, pinv_jac_row_block), row_names, column_names)
 
 
 class WristTracker(MocapTracker, MocapWrist):
