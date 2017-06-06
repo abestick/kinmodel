@@ -72,8 +72,11 @@ def stack(*args, **kwargs):
     return np.stack([arg.homog()[dims] for arg in args])
 
 
-POSE_NAMES = ('x', 'y', 'z', 'qw', 'qx', 'qy', 'qz')
-TRANSFORM_NAMES = ('x', 'y', 'z', 'roll', 'pitch', 'yaw')
+POSITION_NAMES = ('x', 'y', 'z')
+QUATERNION_NAMES = ('qw', 'qx', 'qy', 'qz')
+EULER_NAMES = ('roll', 'pitch', 'yaw')
+QUATERNION_POSE_NAMES = POSITION_NAMES + QUATERNION_NAMES
+EULER_POSE_NAMES = POSITION_NAMES + EULER_NAMES
 
 
 class StateSpaceModel(object):
@@ -228,10 +231,8 @@ class Transform(GeometricPrimitive):
         .p() - (3,) - translation ndarray
         .R() - (3,3) - rotation ndarray
     """
-    pose_names = POSE_NAMES
-    transform_names = TRANSFORM_NAMES
-    conventions = {'quaternion': pose_names,
-                   'euler': transform_names}
+    conventions = {'quaternion': QUATERNION_POSE_NAMES,
+                   'euler': EULER_POSE_NAMES}
 
     @classmethod
     def from_dict(cls, dictionary, convention='euler'):
@@ -345,7 +346,7 @@ class Jacobian(object):
         :param list row_names: 
         """
         if row_names is None:
-            row_names = TRANSFORM_NAMES
+            row_names = EULER_POSE_NAMES
 
         if column_names is None:
             column_names = columns.keys()
@@ -365,15 +366,16 @@ class Jacobian(object):
                                                         (len(row_names), len(column))
             self._matrix[:, j] = column
 
-    def _vectorize(self, input_dict):
-        assert set(input_dict) == set(self._column_names)
-        return np.array([input_dict[column] for column in self._column_names])
+    def vectorize(self, input_dict, rows):
+        axis = self._row_names if rows else self._column_names
+        assert set(input_dict) == set(axis), '%s does not match %s' % (set(input_dict), set(axis))
+        return np.array([input_dict[dim] for dim in axis])
 
     def copy(self):
         return deepcopy(self)
 
     def reorder(self, row_names=None, column_names=None):
-        if row_names is not None:
+        if row_names is not None and row_names != self._row_names:
             assert set(row_names) == set(self._row_names), "row_names must contain %s" % self._row_names
             new_array = np.empty_like(self._matrix)
 
@@ -382,7 +384,7 @@ class Jacobian(object):
 
             self._matrix = new_array
 
-        if column_names is not None:
+        if column_names is not None and column_name != self._column_names:
             assert set(column_names) == set(self._column_names), "column_names must contain %s" % self._column_names
             new_array = np.empty_like(self._matrix)
 
@@ -429,11 +431,31 @@ class Jacobian(object):
             return self.transform_right(other._matrix, other._column_names)
 
         elif isinstance(other, dict):
-            other = self._vectorize(other)
-            return self.dot(other)
+            other = self.vectorize(other, rows=False)
+            return dict(zip(self.row_names(), self.dot(other)))
 
         elif isinstance(other, np.ndarray):
             return self.dot(other)
+
+        elif isinstance(other, (int, float)):
+            result = self.copy()
+            result._matrix *= other
+            return result
+
+        else:
+            raise NotImplementedError("Multiplication is not yet implemented for %s." % type(other))
+
+    def __rmul__(self, other):
+
+        if isinstance(other, dict):
+            other = self.vectorize(other, rows=True)
+            return dict(zip(self._column_names, other.dot(self._matrix)))
+
+        elif isinstance(other, np.ndarray):
+            return other.dot(self._matrix)
+
+        elif isinstance(other, (int, float)):
+            return self * other
 
         else:
             raise NotImplementedError("Multiplication is not yet implemented for %s." % type(other))
@@ -446,6 +468,9 @@ class Jacobian(object):
 
     def J(self):
         return self._matrix.copy()
+
+    def T(self):
+        return self.from_array(self._matrix.T, self._column_names, self._row_names)
 
     def subset(self, row_names=None, column_names=None):
         if row_names is None:
@@ -554,6 +579,10 @@ class Jacobian(object):
 class InverseJacobian(Jacobian):
     pass
 
+    def pinv(self):
+        pinv_array = la.pinv(self._matrix)
+        return Jacobian.from_array(pinv_array, self._column_names, self._row_names)
+
 class Twist(object):
     """ xi = Twist(...)  element of se(3)
 
@@ -621,7 +650,7 @@ class Rotation(GeometricPrimitive):
         .homog() - (4,4) - homogeneous coordinates ndarray (for a pure rotation)
     """
 
-    quaternion_names = POSE_NAMES[3:]
+    quaternion_names = QUATERNION_POSE_NAMES[3:]
 
     @classmethod
     def from_dict(cls, dictionary):
@@ -664,7 +693,7 @@ class Vector(GeometricPrimitive):
         .q() - (3,) - cartesian coordinates ndarray
     """
 
-    cartesian_names = POSE_NAMES[:3]
+    cartesian_names = QUATERNION_POSE_NAMES[:3]
 
     @classmethod
     def from_cartesian(cls, cartesian):
@@ -707,7 +736,7 @@ class Point(GeometricPrimitive):
         .q() - (3,) - cartesian coordinates ndarray
     """
 
-    cartesian_names = POSE_NAMES[:3]
+    cartesian_names = QUATERNION_POSE_NAMES[:3]
 
     @classmethod
     def from_cartesian(cls, cartesian):

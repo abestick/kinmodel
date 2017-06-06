@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 from __future__ import print_function
 import numpy as np
-from numpy.linalg import LinAlgError
+from abc import ABCMeta, abstractmethod
 import threading
 import rospy
 import tf
@@ -180,13 +180,15 @@ class MocapTracker(object):
         return estimations, covariances, squared_residuals
 
     def step(self, i=-1):
+
+        for slave in self._slaves.items():
+            slave.step(i)
+
         frame, timestamp = self.mocap_source.get_latest_frame()
         self.step_frame(frame, i)
         return self._estimation
 
     def step_frame(self, frame, i=-1):
-        for slave in self._slaves.items():
-            slave.step(i)
 
         # if its our first frame, converge the error in the filter
         if i == 0:
@@ -315,206 +317,10 @@ class KinematicTreeTracker(MocapTracker):
         self.exit = True
 
 
-class KinematicTreeExternalFrameTracker(object):
-    def __init__(self, kin_tree, base_tf_frame_name=None):
-        self._kin_tree = kin_tree
-        self._base_frame_name = base_tf_frame_name
-        self._tf_pub_frame_names = []  # Frame names to publish on tf after an _update() call
-        self._attached_frame_names = []  # All attached static frames
-        self._attached_tf_frame_names = []  # All attached tf frames - update during an _update() call
-        self._joint_names = self._kin_tree.get_joints().keys()
-
-        if base_tf_frame_name is not None:
-            self.init_tf(base_tf_frame_name)
-
-        else:
-            self._tf_pub = None
-            self._tf_listener = None
-
-    def init_tf(self, base_tf_frame_name):
-        self._base_frame_name = base_tf_frame_name
-        self._tf_pub = tf.TransformBroadcaster()
-        self._tf_listener = tf.TransformListener()
-
-    def connect_tracker(self, tracker, config_map=None):
-        """
-        
-        :param MocapTracker tracker: the tracker that will provide the values of some of the configs
-        :param dict config_map: An optional dict which maps the raw kinematic tree joint names to the tracker outputs.
-                When this is not set, it defaults to mapping the non-prefixed state outputs to the prefixed outputs
-        :return: 
-        """
-        if config_map is None:
-            config_map = dict(zip(tracker.get_state_names(raw=True), tracker.get_state_names()))
-
-        self._kin_tree.rename_configs(config_map)
-
-    def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
-        # Attach a static frame to the tree
-        self._kin_tree._pox_stale = True
-        self._kin_tree._dpox_stale = True
-        joints = self._kin_tree.get_joints()
-        if pose is None:
-            # No pose specified, set to mean position of all other Point children of this joint
-            trans = np.zeros((3,))
-            num_points = 0
-            for point in joints[joint_name].children:
-                try:
-                    trans = trans + point.primitive.q().squeeze()
-                    num_points += 1
-                except AttributeError:
-                    pass  # This feature isn't a Point
-            trans = trans / num_points
-            homog = np.identity(4)
-            homog[0:3, 3] = trans
-        else:
-            # Attach the frame at the specified pose
-            homog = pose.squeeze()
-        new_feature = kinmodel.Feature(frame_name, kinmodel.Transform(homog_array=homog))
-        joints[joint_name].children.append(new_feature)
-        self._attached_frame_names.append(frame_name)
-        if tf_pub:
-            self._tf_pub_frame_names.append(frame_name)
-
-    def attach_tf_frame(self, joint_name, tf_frame_name):
-        # Attach reference frame to specified joint
-        self.attach_frame(joint_name, '_tf_ref_' + tf_frame_name, tf_pub=True)
-
-        # Attach tf frame
-        joints = self._kin_tree.get_joints()
-        new_feature = kinmodel.Feature(tf_frame_name, kinmodel.Transform())
-        joints[joint_name].children.append(new_feature)
-        self._attached_tf_frame_names.append(tf_frame_name)
-
-    def set_config(self, joint_angles_dict):
-        self._kin_tree.set_config(joint_angles_dict)
-
-    def observe_frames(self):
-        self._update()
-        observations = self._kin_tree.observe_features()
-        external_frame_dict = {}
-        for frame_name in self._attached_frame_names:
-            external_frame_dict[frame_name] = observations[frame_name]
-        for frame_name in self._attached_tf_frame_names:
-            external_frame_dict[frame_name] = observations[frame_name]
-        return external_frame_dict
-
-    def compute_jacobian(self, base_frame_name, manip_name_frame, joint_angles_dict=None):
-        if joint_angles_dict is not None:
-            self.set_config(joint_angles_dict)
-        self._update()
-        row_names = [manip_name_frame + '_' + element for element in kinmodel.TRANSFORM_NAMES]
-        minimial_jacobian = kinmodel.Jacobian(self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame),
-                                              row_names)
-
-        return minimial_jacobian.pad(column_names=self._joint_names).reorder(column_names=self._joint_names)
-
-    def _update(self):
-        # Get the current and zero-config feature observations
-        feature_obs = self._kin_tree.observe_features()
-        all_features = self._kin_tree.get_features()
-
-        # Update tf frame poses
-        updated_features = {}
-        for frame_name in self._attached_tf_frame_names:
-            try:
-                trans, rot = self._tf_listener.lookupTransform(self._base_frame_name, frame_name, rospy.Time(0))
-                tf_transform = tf.transformations.quaternion_matrix(rot)
-                tf_transform[0:3, 3] = trans
-                base_robot_trans = kinmodel.Transform(homog_array=tf_transform)
-                base_reference_trans = feature_obs['_tf_ref_' + frame_name]
-                base_reference_zero_config = all_features['_tf_ref_' + frame_name]
-                updated_features[frame_name] = base_reference_zero_config * (
-                base_reference_trans.inv() * base_robot_trans)
-            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-                print('Lookup failed for TF frame: ' + frame_name)
-        self._kin_tree.set_features(updated_features)
-
-        if self._tf_pub is not None:
-            # Observe and publish specified static features
-            for frame_name in self._tf_pub_frame_names:
-                obs = feature_obs[frame_name].homog()
-                self._tf_pub.sendTransform(obs[0:3, 3],
-                                           tf.transformations.quaternion_from_matrix(obs),
-                                           rospy.Time.now(), frame_name, self._base_frame_name)
-
-    def get_observables(self, configs=None):
-        if configs is not None:
-            self.set_config(configs)
-        observables = {}
-        frames = self.observe_frames()
-        for frame in frames:
-            for element, value in frames[frame].to_dict().items():
-                observables[frame + '_' + element] = value
-
-        return observables
-
-    def jacobian_groups(self):
-        """
-        :return: A dict mapping frame names to their element_wise scalar state names and 'configs' to joint names
-        """
-        groups = {'configs': self._kin_tree.get_joints().keys()}
-        for frame_name in self._attached_frame_names:
-            groups[frame_name] = [frame_name + '_' + element for element in kinmodel.POSE_NAMES]
-
-        return groups
-
-    def partial_derivative(self, output_group, input_group, configs=None):
-        """
-        Calculates the partial derivative between two groups of states
-        :param output_group: the name of the group whose states are the output vector to the function
-        :param input_group: the name of the group whose states are the input vector to the function
-        :param configs: the joint angles with which to calculate this partial derivative
-        :return: 
-        """
-
-        # If the groups are the same, return the identity
-        if output_group == input_group:
-            length = len(self._kin_tree.get_joints()) if output_group == 'configs' else 7
-            return np.identity(length)
-
-        # If the input group is the configs group, return the corresponding jacobian
-        elif input_group == 'configs':
-            return self.compute_jacobian('base', output_group, configs)
-
-        # If the output group is the configs group, return the corresponding inverse jacobian
-        elif output_group == 'configs':
-            return self.compute_jacobian('base', input_group, configs).pinv()
-
-        # If both groups are poses, use the chain rule to chain the corresponding jacobian and inverse jacobian
-        else:
-            return self.compute_jacobian('base', output_group, configs) * \
-                   self.compute_jacobian('base', input_group, configs).pinv()
-
-    def full_partial_derivative(self, coordinate_frame, configs=None):
-
-        if configs is not None:
-            self.set_config(configs)
-
-        row_names = list(self._joint_names)
-
-        jacobians = [np.identity(len(self._joint_names))]
-        pinv_jacobians = [np.identity(len(self._joint_names))]
-
-        for frame in self._attached_frame_names:
-            if frame == coordinate_frame:
-                continue
-            jacobian = self.compute_jacobian(coordinate_frame, frame)
-            jacobians.append(jacobian.J())
-            pinv_jacobians.append(jacobian.pinv().J())
-            row_names.extend(jacobian.row_names())
-
-        column_names = list(row_names)
-        jac_column_block = np.concatenate(jacobians, axis=0)
-        pinv_jac_row_block = np.concatenate(pinv_jacobians, axis=1)
-
-        return kinmodel.Jacobian.from_array(np.dot(jac_column_block, pinv_jac_row_block), row_names, column_names)
-
-
 class WristTracker(MocapTracker, MocapWrist):
     """
     Child of MocapTracker and MocapWrist specific to wrist tracking. Inheriting MocapWrist means this class inherits all
-    the pre-defined marker names and marker groups specific to the wrist which are define in 
+    the pre-defined marker names and marker groups specific to the wrist which are define in
     phasespace.mocap_definitions.MocapWrist
     """
     def __init__(self, name, mocap_source, marker_indices, reference_frame, joint_states_topic=None, object_tf_frame=None,
@@ -581,6 +387,260 @@ class WristTracker(MocapTracker, MocapWrist):
         return {config: euler_angles[i] for i, config in enumerate(self.configs)}
 
 
+class FrameTracker(object):
+
+    __metaclass__ = ABCMeta
+
+    def __init__(self, base_tf_frame_name=None, convention='quaternion'):
+        self._base_frame_name = base_tf_frame_name
+        self._tf_pub_frame_names = []  # Frame names to publish on tf after an _update() call
+        self._attached_frame_names = []  # All attached static frames
+        self._attached_tf_frame_names = []  # All attached tf frames - update during an _update() call
+
+        self.convention = None
+        self.set_convention(convention)
+
+        if base_tf_frame_name is not None:
+            self.init_tf(base_tf_frame_name)
+
+        else:
+            self._tf_pub = None
+            self._tf_listener = None
+
+    def set_convention(self, convention):
+        assert convention in kinmodel.Transform.conventions, \
+            "Convention '%s' not in %s" % (convention, kinmodel.Transform.conventions.keys())
+        self.convention = convention
+
+    def get_convention(self):
+        return self.convention
+
+    def init_tf(self, base_tf_frame_name):
+        self._base_frame_name = base_tf_frame_name
+        self._tf_pub = tf.TransformBroadcaster()
+        self._tf_listener = tf.TransformListener()
+
+    def get_frame_names(self):
+        return self._attached_frame_names + self._attached_tf_frame_names
+
+    def is_tracked(self, frame):
+        return frame in self.get_frame_names()
+
+    @abstractmethod
+    def attach_frame(self, joint_name, frame_name, tf_pub=True):
+        pass
+
+    @abstractmethod
+    def set_config(self, joint_angles_dict):
+        pass
+
+    @abstractmethod
+    def observe_frames(self):
+        pass
+
+    @abstractmethod
+    def observe_frame(self, frame_name):
+        return None
+
+    @abstractmethod
+    def compute_jacobian(self, base_frame_name, manip_name_frame, joint_angles_dict=None):
+        pass
+
+    @abstractmethod
+    def get_observable_names(self):
+        pass
+
+    @abstractmethod
+    def get_observables(self, configs=None, frames=None):
+        pass
+
+    @abstractmethod
+    def partial_derivative(self, output_group, input_group, configs=None):
+        pass
+
+
+class KinematicTreeExternalFrameTracker(FrameTracker):
+
+    def __init__(self, kin_tree, base_tf_frame_name=None, convention='quaternion'):
+        self._kin_tree = kin_tree
+        self._joint_names = self._kin_tree.get_joints().keys()
+
+        super(KinematicTreeExternalFrameTracker, self).__init__(base_tf_frame_name, convention)
+
+        self.attach_frame(self._kin_tree.get_root_joint(), 'root', pose=kinmodel.Transform())
+
+    def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
+        # Attach a static frame to the tree
+        self._kin_tree._pox_stale = True
+        self._kin_tree._dpox_stale = True
+        joints = self._kin_tree.get_joints()
+        if pose is None:
+            # No pose specified, set to mean position of all other Point children of this joint
+            trans = np.zeros((3,))
+            num_points = 0
+            for point in joints[joint_name].children:
+                try:
+                    trans = trans + point.primitive.q().squeeze()
+                    num_points += 1
+                except AttributeError:
+                    pass  # This feature isn't a Point
+            trans = trans / num_points
+            homog = np.identity(4)
+            homog[0:3, 3] = trans
+        else:
+            # Attach the frame at the specified pose
+            homog = pose.squeeze()
+        new_feature = kinmodel.Feature(frame_name, kinmodel.Transform(homog_array=homog))
+        joints[joint_name].children.append(new_feature)
+        self._attached_frame_names.append(frame_name)
+        if tf_pub:
+            self._tf_pub_frame_names.append(frame_name)
+
+    def attach_tf_frame(self, joint_name, tf_frame_name):
+        # Attach reference frame to specified joint
+        self.attach_frame(joint_name, '_tf_ref_' + tf_frame_name, tf_pub=True)
+
+        # Attach tf frame
+        joints = self._kin_tree.get_joints()
+        new_feature = kinmodel.Feature(tf_frame_name, kinmodel.Transform())
+        joints[joint_name].children.append(new_feature)
+        self._attached_tf_frame_names.append(tf_frame_name)
+
+    def set_config(self, joint_angles_dict):
+        self._kin_tree.set_config(joint_angles_dict)
+
+    def observe_frames(self, frames=None):
+        all_frames = frames = set(self._attached_frame_names) | set(self._attached_tf_frame_names)
+
+        if frames is None:
+            frames = all_frames
+
+        else:
+            assert set(frames) <= all_frames, '%s is not a subset of %s' % (frames, all_frames)
+
+        self._update()
+        observations = self._kin_tree.observe_features()
+        external_frame_dict = {}
+        for frame_name in frames:
+            external_frame_dict[frame_name] = observations[frame_name]
+        return external_frame_dict
+
+    def observe_frame(self, frame_name):
+        self._update()
+        observations = self._kin_tree.observe_features()
+        return observations[frame_name]
+
+    def compute_jacobian(self, base_frame_name, manip_name_frame, joint_angles_dict=None):
+        if joint_angles_dict is not None:
+            self.set_config(joint_angles_dict)
+        self._update()
+        row_names = [manip_name_frame + '_' + element for element in kinmodel.EULER_POSE_NAMES]
+        minimial_jacobian = kinmodel.Jacobian(self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame),
+                                              row_names)
+
+        return minimial_jacobian.pad(column_names=self._joint_names).reorder(column_names=self._joint_names)
+
+    def _update(self):
+        # Get the current and zero-config feature observations
+        feature_obs = self._kin_tree.observe_features()
+        all_features = self._kin_tree.get_features()
+
+        # Update tf frame poses
+        updated_features = {}
+        for frame_name in self._attached_tf_frame_names:
+            try:
+                trans, rot = self._tf_listener.lookupTransform(self._base_frame_name, frame_name, rospy.Time(0))
+                tf_transform = tf.transformations.quaternion_matrix(rot)
+                tf_transform[0:3, 3] = trans
+                base_robot_trans = kinmodel.Transform(homog_array=tf_transform)
+                base_reference_trans = feature_obs['_tf_ref_' + frame_name]
+                base_reference_zero_config = all_features['_tf_ref_' + frame_name]
+                updated_features[frame_name] = base_reference_zero_config * (
+                base_reference_trans.inv() * base_robot_trans)
+            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                print('Lookup failed for TF frame: ' + frame_name)
+        self._kin_tree.set_features(updated_features)
+
+        if self._tf_pub is not None:
+            # Observe and publish specified static features
+            for frame_name in self._tf_pub_frame_names:
+                obs = feature_obs[frame_name].homog()
+                self._tf_pub.sendTransform(obs[0:3, 3],
+                                           tf.transformations.quaternion_from_matrix(obs),
+                                           rospy.Time.now(), frame_name, self._base_frame_name)
+
+    def get_observables(self, configs=None, frames=None):
+        if configs is not None:
+            self.set_config(configs)
+
+        observables = {}
+        observed_frames = self.observe_frames(frames)
+        for frame in observed_frames:
+            for element, value in observed_frames[frame].to_dict(self.convention).items():
+                observables[frame + '_' + element] = value
+
+        return observables
+
+    def get_observable_names(self):
+        observable_names = []
+        for frame in self._attached_frame_names:
+            for element, value in kinmodel.Transform.conventions[self.convention]:
+                observable_names.append(frame + '_' + element)
+
+        return observable_names
+
+    def partial_derivative(self, output_group, input_group, configs=None):
+        """
+        Calculates the partial derivative between two groups of states
+        :param output_group: the name of the group whose states are the output vector to the function
+        :param input_group: the name of the group whose states are the input vector to the function
+        :param configs: the joint angles with which to calculate this partial derivative
+        :return: 
+        """
+
+        # If the groups are the same, return the identity
+        if output_group == input_group:
+            length = len(self._kin_tree.get_joints()) if output_group == 'configs' else 7
+            return np.identity(length)
+
+        # If the input group is the configs group, return the corresponding jacobian
+        elif input_group == 'configs':
+            return self.compute_jacobian('base', output_group, configs)
+
+        # If the output group is the configs group, return the corresponding inverse jacobian
+        elif output_group == 'configs':
+            return self.compute_jacobian('base', input_group, configs).pinv()
+
+        # If both groups are poses, use the chain rule to chain the corresponding jacobian and inverse jacobian
+        else:
+            return self.compute_jacobian('base', output_group, configs) * \
+                   self.compute_jacobian('base', input_group, configs).pinv()
+
+    def full_partial_derivative(self, coordinate_frame, configs=None):
+
+        if configs is not None:
+            self.set_config(configs)
+
+        row_names = list(self._joint_names)
+
+        jacobians = [np.identity(len(self._joint_names))]
+        pinv_jacobians = [np.identity(len(self._joint_names))]
+
+        for frame in self._attached_frame_names:
+            if frame == coordinate_frame:
+                continue
+            jacobian = self.compute_jacobian(coordinate_frame, frame)
+            jacobians.append(jacobian.J())
+            pinv_jacobians.append(jacobian.pinv().J())
+            row_names.extend(jacobian.row_names())
+
+        column_names = list(row_names)
+        jac_column_block = np.concatenate(jacobians, axis=0)
+        pinv_jac_row_block = np.concatenate(pinv_jacobians, axis=1)
+
+        return kinmodel.Jacobian.from_array(np.dot(jac_column_block, pinv_jac_row_block), row_names, column_names)
+
+
 def extract_marker_subset(frame_data, names, marker_indices):
     """
     Takes a frame of mocap points, marker names, and a dict that maps to indices and returns the subset of those names
@@ -621,9 +681,6 @@ def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-
     return homog_transform, desired_hand_points[:, :3]
 
 
-"""
-These are taken from stack overflow and works pretty well
-"""
 def pca(data, correlation = False, sort = True):
     """ Applies Principal Component Analysis to the data
     
