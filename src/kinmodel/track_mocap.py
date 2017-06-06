@@ -316,6 +316,27 @@ class KinematicTreeTracker(MocapTracker):
     def stop(self):
         self.exit = True
 
+    def get_observation_func(self):
+    	"""Get a function which takes a config dict for the KinematicTree being tracked
+		and returns a dict of feature observations at that config.
+
+		Note that the returned function is NOT thread safe at the moment. Calling
+		obs_func while running this tracker in another thread may cause weird, intermittent bugs.
+		"""
+		def obs_func(state_dict):
+			"""Observation function which returns the feature observations at the specifed state.
+
+			Args:
+			state_dict: dict - maps each joint's name in the tracked KinematicTree
+				to that joint's state
+
+			Returns:
+			Dict mapping each feature's name to its corresponding GeometricPrimitive observation
+			"""
+			self._kin_tree.set_config(state_dict)
+			return self._kin_tree.observe_features()
+		return obs_func
+
 
 class WristTracker(MocapTracker, MocapWrist):
     """
@@ -639,6 +660,51 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         pinv_jac_row_block = np.concatenate(pinv_jacobians, axis=1)
 
         return kinmodel.Jacobian.from_array(np.dot(jac_column_block, pinv_jac_row_block), row_names, column_names)
+
+    def get_observation_func(self):
+		"""Get a function which takes a config dict for the KinematicTree being tracked
+		and returns a dict of frame observations at that config.
+
+		Note that the returned function is NOT thread safe at the moment. Calling
+		obs_func while running this tracker in another thread may cause weird, intermittent bugs.
+		"""
+		def obs_func(state_dict):
+			"""Observation function which returns the frame observations at the specifed state.
+
+			Args:
+			state_dict: dict - maps each joint's name in the tracked KinematicTree
+				to that joint's state
+
+			Returns:
+			Dict mapping each frame's name to its corresponding GeometricPrimitive observation
+			"""
+			self.set_config(state_dict)
+			return self.observe_frames()
+		return obs_func
+
+	def get_jacobian_func(self, base_frame_name, manip_frame_name):
+		"""Get a function which takes a config dict for the KinematicTree being tracked
+		and returns a dict with a single element mapped to the jacobian of the specified manip
+		frame with respect to the specified base frame.
+
+		Note that the returned function is NOT thread safe at the moment. Calling
+		obs_func while running this tracker in another thread may cause weird, intermittent bugs.
+		"""
+		def obs_func(state_dict):
+			"""Observation function which returns the requested jacobian at the specifed state.
+
+			Args:
+			state_dict: dict - maps each joint's name in the tracked KinematicTree
+				to that joint's state
+
+			Returns:
+			Dict mapping '<base>_<manip>_jacobian' to the computed Jacobian object
+			"""
+			jacobian = self.compute_jacobian(base_frame_name, manip_frame_name,
+					joint_angles_dict=state_dict)
+			jacobian_dict = {base_frame_name + '_' + manip_frame_name + '_jacobian':jacobian}
+			return jacobian_dict
+		return obs_func
 
 
 def extract_marker_subset(frame_data, names, marker_indices):
