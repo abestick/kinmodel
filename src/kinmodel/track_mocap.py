@@ -15,131 +15,19 @@ from phasespace.mocap_definitions import MocapWrist
 from phasespace.load_mocap import transform_frame, find_homog_trans, MocapStream
 from copy import deepcopy
 
-
 class MocapTracker(object):
-    """
-    A general class which pipes mocap points from a mocap source to a UKF
-    """
+    """A general tracker which processes frames from a mocap source to produce some output.
 
-    def __init__(self, name, mocap_source, state_space_model, base_markers, base_frame_points, marker_indices,
-                 joint_states_topic=None, object_tf_frame=None, new_frame_callback=None, is_master=False):
-        """
-        Constructor
-        :param name: This name helps when defining coordinate frames in the mocap source so that each tracker is unique
-        :param mocap_source: the MocapSource object to draw point data from
-        :param state_space_model: the model which the UKF will be based on
-        :param base_markers: list of strings, the markers which are static relative to one another in the base frame
-        I chose to pass the names of the markers instead of the indices so tracker definitions are more readable
-        :param base_frame_points: the values of the base_markers when transformed into the base frame
-        :param dict marker_indices: a dictionary mapping marker names to marker indices in the MocapSource
-        :param joint_states_topic: an optional topic upon which to publish tracker output
-        :param object_tf_frame: Not 100% sure how this ties in now, relic of KinematicTreeTracker but maybe it should be
-        only in the KinematicTreeTrack child??
-        :param new_frame_callback: optional callback function called when UKF output is obtained
-        """
-        # copy across data
+    The tracker can be run on individual frames using the step() method, or can be run independently
+    on the data from a MocapSource using the start() (to run in a new thread) or run() (to block
+    until processing is complete) methods.
+    """
+    __metaclass__ = ABCMeta
+
+    def __init__(self, name):
         self.name = name
-        self.mocap_source = mocap_source
-        self.state_space_model = state_space_model
-        self.base_markers = base_markers
-        self.base_frame_points = base_frame_points
-        self._marker_indices = marker_indices
-        # reverse the dict so we can access names for  markers too
-        self._marker_names = {index: name for name, index in self._marker_indices.items()}
-
-        # get the indices for the bases
-        self.base_indices = self.get_marker_indices(self.base_markers)
-
-        self._estimation_pub = None
-        self._tf_pub = None
-        self._callbacks = [new_frame_callback] if new_frame_callback is not None else []
         self.exit = False
-
-        if joint_states_topic is not None:
-            self._estimation_pub = rospy.Publisher(joint_states_topic, sensor_msgs.JointState,
-                                                   queue_size=10)
-        if object_tf_frame is not None:
-            self._tf_pub = tf.TransformBroadcaster()
-
-        # set up the filter
-        self.uk_filter = ukf.UnscentedKalmanFilter(self.state_space_model.process_model,
-                                                   self.state_space_model.measurement_model,
-                                                   x0=np.zeros(self.state_space_model.state_length()),
-                                                   P0=np.identity(self.state_space_model.state_length()) * 0.25,
-                                                   Q=np.pi / 2 / 80, R=5e-3)
-
-        self._last_frame_stream = MocapStream(self.mocap_source, max_buffer_len=1)
-
-        # setup the coordinate frame for the system in the last frame stream
-        self._last_frame_stream.set_coordinates(self.base_indices, self.base_frame_points, mode='time_varying')
-        self.mocap_source.register_buffer(self._last_frame_stream)
-
-        self._estimation = None
-        self._observation = None
-        self._covariance = None
-        self._squared_residual = None
-        self._is_master = is_master
-        self._slaves = {}
-
-    def _unvectorize_estimation(self, state_vector=None):
-        if state_vector is None:
-            state_vector = np.zeros(self.state_space_model.state_length())
-
-        return self.state_space_model.unvectorize_estimation(state_vector)
-
-    def get_state_names(self, raw=False):
-        prefix = '' if raw else None
-        return self._unvectorize_estimation().keys()
-
-    def is_master(self):
-        return self._is_master
-
-    def set_master(self, is_master):
-        # If we are changing something
-        if is_master != self._is_master:
-            # update whether we are a master or not
-            self._is_master = is_master
-
-            # in both cases this list should be empty (slaves shouldn't have slaves and new masters don't yet either)
-            self._slaves = {}
-
-    def add_slaves(self, slaves):
-        """
-        Adds a list of other trackers as slaves who's step functions will be called whenever this one is.
-        This function checks that the other trackers are slaves and thus is safer than enslave
-        :param slaves: list of trackers with is_master() == False
-        :return: 
-        """
-        for slave in slaves:
-            assert not slave.is_master(), "You cannot add another master as a slave!"
-            self._slaves[slave.name] = slave
-
-    def enslave(self, others):
-        """
-        This function takes a list of other trackers and forces them into being slaves, thus perhaps losing links.
-        :param others: list of trackers
-        :return: 
-        """
-        for other in others:
-            other.set_master(False)
-            self._slaves[other.name] = other
-
-    def free(self, name):
-        self._slaves.pop(name)
-
-    def free_all(self):
-        self._slaves = {}
-
-    def register_callback(self, callback):
-        self._callbacks.append(callback)
-
-    def get_marker_indices(self, marker_names):
-        """Returns the marker indices for a set of marker names"""
-        return [self._marker_indices[name] for name in marker_names]
-
-    def get_marker_names(self, marker_indices):
-        """Returns the marker names for a set of marker indices"""
-        return [self._marker_names[index] for index in marker_indices]
+        self._callbacks = []
 
     def start(self):
         """Runs the thread to begin the tracker"""
@@ -152,63 +40,175 @@ class MocapTracker(object):
         """Stops the thread"""
         self.exit = True
 
-    def run(self, record=False):
+    def run(self, mocap_source, mocap_transformer=None, record=False):
+        """Runs the tracker in its own thread, with its own mocap source.
+
+        This method shouldn't be used when running this tracker in a synchronized fashion
+        in parallel with other MocapTrackers. It is useful, however, when you'd like to run
+        a standalone tracker that, for instance, tracks a KinematicTree and publishes its state
+        to a ROS topic.
+
+        Args:
+        mocap_source: MocapSource - the source to get mocap frames from, either online or offline
+        mocap_transformer: MocapTransformer - a transformer to apply to each frame before it's
+            consumed by this tracker
         """
-        Iterates over the mocap source, applies all processing and filtering to the data and calls the relevant updates 
-        """
-
-        estimations = []
-        covariances = []
-        squared_residuals = []
-
-        stream = self.mocap_source.get_stream()
-        stream.set_coordinates(self.base_indices, self.base_frame_points, mode='time_varying')
-
+        if record:
+            recorded_results = []
+        else:
+            recorded_results = None
+        stream = mocap_source.get_stream()
         for i, (frame, timestamp) in enumerate(stream):
-
             if self.exit:
                 break
-
-            self.step_frame(frame, i)
-
-            if record:
-                estimations.append(self._estimation)
-                covariances.append(self._covariance)
-                squared_residuals.append(self._squared_residual)
-
+            if mocap_transformer is not None:
+                frame = mocap_transformer.transform(frame)
+            result = self.process_frame(frame)
+            if recorded_results is not None:
+                recorded_results.append(result)
         self.mocap_source.unregister_buffer(stream)
-        return estimations, covariances, squared_residuals
+        return recorded_results
 
-    def step(self, i=-1):
+    def process_frame(self, frame):
+        """Processes a frame, updates the appropriate outputs, and returns the result.
 
-        for slave in self._slaves.items():
-            slave.step(i)
+        Args:
+        frame - (N,3,1) ndarray - the mocap frame to process
 
-        frame, timestamp = self.mocap_source.get_latest_frame()
-        self.step_frame(frame, i)
-        return self._estimation
+        Returns:
+        A dict of all the result values produced by this tracker's _process_frame method
+        """
+        result = self._process_frame(frame)
+        self.update_outputs(result)
+        return result
 
-    def step_frame(self, frame, i=-1):
+    @abstractmethod
+    def _process_frame(self, frame):
+        """The specific processing this tracker should perform on each frame to produce the result.
 
-        # if its our first frame, converge the error in the filter
-        if i == 0:
-            state_vector, self._covariance, self._squared_residual = self._initialize_filter(frame)
+        Client code should NOT call this method directly. Instead, use the process_frame() method to
+        ensure that outputs are updated appropriately.
 
-        else:
-            # otherwise store filter output
-            state_vector, self._covariance, self._squared_residual = self._filter(frame)
+        Args:
+        frame - (N,3,1) ndarray - the mocap frame to process
 
-        self._estimation = self._unvectorize_estimation(state_vector)
+        Returns:
+        A dict mapping the names of each result to the value of that result
+        """
+        pass
 
-        # and call the callbacks, publisher's etc
-        self._update_outputs(i)
+    def _update_outputs(self, result):
+        """Updates all callbacks with a new result every time process_frame() is called. Subclasses
+        which override this method must call the superclass implementation to ensure callbacks are
+        handled correctly.
+
+        Args:
+        result: dict - the return value from process_frame
+        """
+        for callback in self._callbacks:
+            callback(result)
+
+    def register_callback(self, callback):
+        self._callbacks.append(callback)
+
+class MocapFrameTracker(MocapTracker):
+    def __init__(self, name, tracked_frame_indices, tracked_frame_points=None):
+        super(MocapFrameTracker, self).__init__(name)
+        self.tracked_frame_indices = tracked_frame_indices
+        self.tracked_frame_points = tracked_frame_points
+        self._last_transform = np.identity(4)
 
     def _process_frame(self, frame):
+        if self.tracked_frame_points is None:
+            tracked_frame_points = frame[self.tracked_frame_indices,:,0]
+            if not np.any(np.isnan(tracked_frame_points)):
+                tracked_frame_points = tracked_frame_points - np.mean(tracked_frame_points, axis=1)
+                self.tracked_frame_points = tracked_frame_points
+
+        if self.tracked_frame_points is not None:
+            # Find which of the specified markers are visible in this frame
+            visible_inds = ~np.isnan(frame[self.tracked_frame_indices, :, 0]).any(axis=1)
+
+            # Compute the transformation
+            orig_points = frame[self.tracked_frame_indices[visible_inds], :, 0]
+            desired_points = self.tracked_frame_points[visible_inds]
+            try:
+                homog = find_homog_trans(orig_points, desired_points)[0]
+                self._last_transform = homog
+            except ValueError:
+                # Not enough points visible for tf.transformations to compute the transform
+                homog = self._last_transform
+            return {'homog': homog}
+        else:
+            return {}
+
+
+
+class MocapUkfTracker(MocapTracker):
+    """
+    A general class which pipes mocap points from a mocap source to a UKF
+    """
+
+    def __init__(self, name, state_space_model, marker_indices, joint_states_topic=None):
+        """
+        Constructor
+        :param state_space_model: the model which the UKF will be based on
+        :param joint_states_topic: an optional topic upon which to publish tracker output
+        """
+        super(MocapUkfTracker, self).__init__(name)
+
+        # copy across data
+        self.state_space_model = state_space_model
+        self._marker_indices = marker_indices
+
+        # reverse the dict so we can access names for  markers too
+        self._marker_names = {index: name for name, index in self._marker_indices.items()}
+
+        self._estimation_pub = None
+        # self._tf_pub = None
+        self._callbacks = [new_frame_callback] if new_frame_callback is not None else []
+
+        if joint_states_topic is not None:
+            self._estimation_pub = rospy.Publisher(joint_states_topic, sensor_msgs.JointState,
+                                                   queue_size=10)
+        # if object_tf_frame is not None:
+        #     self._tf_pub = tf.TransformBroadcaster()
+
+        # set up the filter
+        self.uk_filter = ukf.UnscentedKalmanFilter(self.state_space_model.process_model,
+                                                   self.state_space_model.measurement_model,
+                                                   x0=np.zeros(self.state_space_model.state_length()),
+                                                   P0=np.identity(self.state_space_model.state_length()) * 0.25,
+                                                   Q=np.pi / 2 / 80, R=5e-3)
+        self._initialized = False
+
+    def _unvectorize_estimation(self, state_vector=None):
+        if state_vector is None:
+            state_vector = np.zeros(self.state_space_model.state_length())
+
+        return self.state_space_model.unvectorize_estimation(state_vector)
+
+    def _process_frame(self, frame):
+        # If its our first frame, converge the error in the filter
+        if not self._initialized:
+            state_vector, covariance, squared_residual = self._initialize_filter(frame)
+            self._initialized = True
+        else:
+            # Otherwise store filter output
+            state_vector, covariance, squared_residual = self._filter(frame)
+
+        estimation = self._unvectorize_estimation(state_vector)
+
+        # And call the callbacks, publishers etc
+        result = {'mean':estimation, 'covariance':covariance, 'squared_residual':squared_residual}
+        self._update_outputs(result)
+
+    def _preprocess_frame(self, frame):
         # convert frame into observation dict and store
-        self._observation = self._extract_observation(frame)
+        observation = self._extract_observation(frame)
 
         # convert observation dict into state space measurement
-        measurement = self._preprocess_measurement(self._observation)
+        measurement = self._preprocess_measurement(observation)
 
         # vectorize the measurement
         return self.state_space_model.vectorize_measurement(measurement)
@@ -231,29 +231,31 @@ class MocapTracker(object):
         """
         return observation
 
-    def _update_outputs(self, i):
+    def update_outputs(self, result):
         """
         Calls callbacks, oublishes to topics, and to tf 
-        :param i: the frame count
-        :return: 
+        
+        Args:
+        result: dict - the outputs from one step of this tracker
         """
-        for callback in self._callbacks:
-            callback(i, self._estimation, covariance=self._covariance,
-                           squared_residual=self._squared_residual)
+        # Call superclass implementation so callbacks are handled properly
+        super(MocapUkfTracker, self).update_outputs(result)
 
+        # Publish joint states
         if self._estimation_pub is not None:
-            msg = sensor_msgs.JointState(position=self._estimation.squeeze(),
+            msg = sensor_msgs.JointState(position=result['mean'].squeeze(),
                                          header=Header(stamp=rospy.Time.now()))
             self._estimation_pub.publish(msg)
 
+        # TODO: Move this code to the location where the coordinate transform is being applied
         # Publish the base frame pose of the flexible object
-        if self._tf_pub is not None:
-            homog = npla.inv(self.mocap_source.get_last_coordinates())
-            mocap_frame_name = self.mocap_source.get_frame_name()
-            if mocap_frame_name is not None:
-                self._tf_pub.sendTransform(homog[0:3, 3],
-                                           tf.transformations.quaternion_from_matrix(homog),
-                                           rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
+        # if self._tf_pub is not None:
+        #     homog = npla.inv(self.mocap_source.get_last_coordinates())
+        #     mocap_frame_name = self.mocap_source.get_frame_name()
+        #     if mocap_frame_name is not None:
+        #         self._tf_pub.sendTransform(homog[0:3, 3],
+        #                                    tf.transformations.quaternion_from_matrix(homog),
+        #                                    rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
 
     def _initialize_filter(self, initial_frame, reps=50):
         """
@@ -262,26 +264,37 @@ class MocapTracker(object):
         :param reps: how many cycles to run
         :return: 
         """
-        initial_measurement = self._process_frame(initial_frame)
+        initial_measurement = self._preprocess_frame(initial_frame)
 
         for i in range(reps):
             self.uk_filter.filter(initial_measurement)
         return self.uk_filter.filter(initial_measurement)
 
     def _filter(self, frame):
-        measurement_array = self._process_frame(frame)
+        measurement_array = self._preprocess_frame(frame)
         return self.uk_filter.filter(measurement_array)
+
+    def get_state_names(self, raw=False):
+        prefix = '' if raw else None
+        return self._unvectorize_estimation().keys()
+
+    def get_marker_indices(self, marker_names):
+        """Returns the marker indices for a set of marker names"""
+        return [self._marker_indices[name] for name in marker_names]
+
+    def get_marker_names(self, marker_indices):
+        """Returns the marker names for a set of marker indices"""
+        return [self._marker_names[index] for index in marker_indices]
 
     def clone(self):
         return deepcopy(self)
 
 
-class KinematicTreeTracker(MocapTracker):
-    def __init__(self, name, kin_tree, mocap_source, joint_states_topic=None, object_tf_frame=None,
-                 new_frame_callback=None, return_array=False):
+class KinematicTreeTracker(MocapUkfTracker):
+    def __init__(self, name, kin_tree, joint_states_topic=None):
         self.kin_tree = kin_tree
-        self._return_array = return_array
 
+        #TODO: Move all this into system.py, and set the coordinate transform for all the trackers in one place
         # Get the base marker indices
         base_markers = []
         base_joint = self.kin_tree.get_root_joint()
@@ -303,18 +316,8 @@ class KinematicTreeTracker(MocapTracker):
 
         state_space_model = kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
 
-        super(KinematicTreeTracker, self).__init__(name, mocap_source, state_space_model, base_markers, base_frame_points,
-                                                   marker_indices, joint_states_topic, object_tf_frame,
-                                                   new_frame_callback)
-
-    def start(self):
-        self.exit = False
-        reader_thread = threading.Thread(target=self.run)
-        reader_thread.start()
-        return reader_thread
-
-    def stop(self):
-        self.exit = True
+        super(KinematicTreeTracker, self).__init__(name, state_space_model, marker_indices, 
+            joint_states_topic)
 
     def get_observation_func(self):
     	"""Get a function which takes a config dict for the KinematicTree being tracked
@@ -338,9 +341,9 @@ class KinematicTreeTracker(MocapTracker):
 		return obs_func
 
 
-class WristTracker(MocapTracker, MocapWrist):
+class WristTracker(MocapUkfTracker, MocapWrist):
     """
-    Child of MocapTracker and MocapWrist specific to wrist tracking. Inheriting MocapWrist means this class inherits all
+    Child of MocapUkfTracker and MocapWrist specific to wrist tracking. Inheriting MocapWrist means this class inherits all
     the pre-defined marker names and marker groups specific to the wrist which are define in
     phasespace.mocap_definitions.MocapWrist
     """
@@ -710,7 +713,7 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
 def extract_marker_subset(frame_data, names, marker_indices):
     """
     Takes a frame of mocap points, marker names, and a dict that maps to indices and returns the subset of those names
-    Should this be a method of MocapTracker??
+    Should this be a method of MocapUkfTracker??
     """
     indices = [marker_indices[name] for name in names]
     return frame_data[indices, :]
