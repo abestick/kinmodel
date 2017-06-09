@@ -15,6 +15,53 @@ from phasespace.mocap_definitions import MocapWrist
 from phasespace.load_mocap import transform_frame, find_homog_trans, MocapStream
 from copy import deepcopy
 
+## TODO: Put the following coordinate transform code wherever in the system the MocapStream is 
+# iterated over
+#-----------------------------------------------------
+# Method to get the coordinates and indices of the object base frame markers from a kintree
+def get_kin_tree_base_markers(kin_tree):
+    #Get base marker names
+    base_markers = []
+    base_joint = self.kin_tree.get_root_joint()
+    for child in base_joint.children:
+        if not hasattr(child, 'children'):
+            # This is a feature
+            base_markers.append(child.name)
+
+    # Get mapping of marker names -> marker idxs
+    marker_indices = {}
+    for feature_name in self.kin_tree.get_features():
+        marker_indices[feature_name] = int(feature_name.split('_')[1])
+
+    # Get the desired coordinates of each base marker
+    base_frame_points = np.zeros((len(base_markers), 3, 1))
+    all_features = self.kin_tree.get_features()
+    for i, marker in enumerate(base_markers):
+        base_frame_points[i, :, 0] = all_features[marker].q()
+
+    base_idxs = [marker_indices[name] for name in base_markers]
+    return base_idxs, base_frame_points
+
+mocap_source = MocapArray(...) #or whatever other source you want
+mocap_stream = mocap_source.get_stream()
+mocap_stream.set_coordinates(base_idxs, base_frame_points)
+self._tf_pub = tf.TransformBroadcaster()
+
+for (frame, timestamp) in mocap_stream:
+    # Compute the current mocap->object_base transform and publish it
+    homog = npla.inv(mocap_stream.get_last_coordinates())
+    mocap_frame_name = self.mocap_source.get_frame_name()
+    if mocap_frame_name is not None:
+        self._tf_pub.sendTransform(homog[0:3, 3],
+                                   tf.transformations.quaternion_from_matrix(homog),
+                                   rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
+
+    # Then call each MocapTracker's process_frame() with frame as the argument
+
+#--------------------------------------------------------
+
+
+
 class MocapTracker(object):
     """A general tracker which processes frames from a mocap source to produce some output.
 
@@ -171,8 +218,6 @@ class MocapUkfTracker(MocapTracker):
         if joint_states_topic is not None:
             self._estimation_pub = rospy.Publisher(joint_states_topic, sensor_msgs.JointState,
                                                    queue_size=10)
-        # if object_tf_frame is not None:
-        #     self._tf_pub = tf.TransformBroadcaster()
 
         # set up the filter
         self.uk_filter = ukf.UnscentedKalmanFilter(self.state_space_model.process_model,
@@ -247,16 +292,6 @@ class MocapUkfTracker(MocapTracker):
                                          header=Header(stamp=rospy.Time.now()))
             self._estimation_pub.publish(msg)
 
-        # TODO: Move this code to the location where the coordinate transform is being applied
-        # Publish the base frame pose of the flexible object
-        # if self._tf_pub is not None:
-        #     homog = npla.inv(self.mocap_source.get_last_coordinates())
-        #     mocap_frame_name = self.mocap_source.get_frame_name()
-        #     if mocap_frame_name is not None:
-        #         self._tf_pub.sendTransform(homog[0:3, 3],
-        #                                    tf.transformations.quaternion_from_matrix(homog),
-        #                                    rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
-
     def _initialize_filter(self, initial_frame, reps=50):
         """
         Runs the filter to converge initial error
@@ -294,28 +329,12 @@ class KinematicTreeTracker(MocapUkfTracker):
     def __init__(self, name, kin_tree, joint_states_topic=None):
         self.kin_tree = kin_tree
 
-        #TODO: Move all this into system.py, and set the coordinate transform for all the trackers in one place
-        # Get the base marker indices
-        base_markers = []
-        base_joint = self.kin_tree.get_root_joint()
-        for child in base_joint.children:
-            if not hasattr(child, 'children'):
-                # This is a feature
-                base_markers.append(child.name)
-
         # Get all the marker indices of interest and map to their names
         marker_indices = {}
         for feature_name in self.kin_tree.get_features():
             marker_indices[feature_name] = int(feature_name.split('_')[1])
 
-        # Set the base coordinate transform for the mocap stream
-        base_frame_points = np.zeros((len(base_markers), 3, 1))
-        all_features = self.kin_tree.get_features()
-        for i, marker in enumerate(base_markers):
-            base_frame_points[i, :, 0] = all_features[marker].q()
-
         state_space_model = kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
-
         super(KinematicTreeTracker, self).__init__(name, state_space_model, marker_indices, 
             joint_states_topic)
 
