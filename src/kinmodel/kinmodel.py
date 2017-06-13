@@ -11,8 +11,10 @@ import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from phasespace.mocap_definitions import MocapWrist
-from tf.transformations import euler_matrix, quaternion_matrix, quaternion_from_matrix, euler_from_matrix
+from tf.transformations import euler_matrix, quaternion_matrix, quaternion_from_matrix, euler_from_matrix, unit_vector
 from copy import deepcopy
+from numbers import Number
+import warnings
 
 
 class abstractclassmethod(classmethod):
@@ -79,6 +81,14 @@ QUATERNION_POSE_NAMES = POSITION_NAMES + QUATERNION_NAMES
 EULER_POSE_NAMES = POSITION_NAMES + EULER_NAMES
 
 
+class ReferenceFrameWarning(Warning):
+
+    def __init__(self, frame_a, frame_b, operation=None):
+        op_str = '' if operation is None else ' (%s)' % operation
+        super(ReferenceFrameWarning, self).__init__('Performing a frame dependent operation%s on two primitives of '
+                                                    'different frames (%s and %s)' % (op_str, frame_a, frame_b))
+
+
 class StateSpaceModel(object):
     """
     An abstract class describing the bare bones needed for a state space model to be defined
@@ -125,6 +135,9 @@ class StateSpaceModel(object):
 class GeometricPrimitive(object):
     __metaclass__ = ABCMeta
 
+    def __init__(self, reference_frame=''):
+        self._reference_frame = reference_frame
+
     @abstractclassmethod
     def from_dict(cls, dictionary):
         pass
@@ -154,6 +167,12 @@ class GeometricPrimitive(object):
     @abstractmethod
     def to_dict(self):
         pass
+
+    def reference_frame(self):
+        return self._reference_frame
+
+    def copy(self):
+        return deepcopy(self)
 
 
 class Feature(object):
@@ -239,16 +258,23 @@ class Transform(GeometricPrimitive):
         element_names = cls.element_names[convention]
         assert set(element_names) == set(dictionary)
         pose = np.array([float(dictionary[pose_name]) for pose_name in element_names])
-        return cls.from_pose(pose)
+        return cls.from_pose_array(pose)
 
     @classmethod
-    def from_pose(cls, pose):
+    def from_pose_array(cls, pose_array):
         homog_array = np.identity(4)
-        homog_array[:, 3] = pose[:3]
-        homog_array[:3, :3] = quaternion_matrix(pose[3:])
+        homog_array[:, 3] = pose_array[:3]
+        homog_array[:3, :3] = quaternion_matrix(pose_array[3:])
         return cls(homog_array)
 
-    def __init__(self, homog_array=None):
+    @classmethod
+    def from_p_R(cls, translation_array, rotation_matrix):
+        homog_array = np.identity(4)
+        homog_array[:, 3] = np.array(translation_array).flatten()
+        homog_array[:3, :3] = np.array(rotation_matrix).squeeze()
+        return cls(homog_array)
+
+    def __init__(self, homog_array=None, reference_frame=''):
         if homog_array is None:
             self._H = np.identity(4)
         else:
@@ -256,11 +282,13 @@ class Transform(GeometricPrimitive):
                 raise ValueError('Input ndarray must be (4,4)')
             self._H = homog_array
 
+        super(Transform, self).__init__(reference_frame)
+
     def homog(self):
         return self._H
 
-    def inv(self):
-        return Transform(homog_array=la.inv(self.homog()))
+    def inv(self, child_frame_name=''):
+        return Transform(homog_array=la.inv(self.homog()), reference_frame=child_frame_name)
 
     def trans(self):
         p = np.append(self._H[0:3,3], 0)
@@ -298,6 +326,21 @@ class Transform(GeometricPrimitive):
         adj[3:,3:] = self.R()
         adj[3:,:3] = se3.skew(self.p()).dot(self.R())
         return adj
+
+    def __sub__(self, other):
+        if isinstance(other, Transform):
+
+            # If the reference frames are not the same, warn of this
+            if self._reference_frame != other._reference_frame:
+                warnings.warn(ReferenceFrameWarning(self._reference_frame, other._reference_frame, 'subtraction'))
+
+            nu = self.trans() - other.trans() # the difference in position in the shared reference frame
+            relative_rotation = self.rot().T() * other.rot() # the relative rotation
+            relative_rotation_vector = relative_rotation.axis_angle() # the axis-angle vector in this one's child frame
+            reference_rotation_vector = self.rot() * relative_rotation_vector # convert it to the shared reference frame
+
+            # return result as a Twist for unit time delta, expressed in the shared reference frame
+            return Twist(omega=reference_rotation_vector, nu=nu.q(), reference_frame=self._reference_frame)
 
 
 class Jacobian(object):
@@ -384,7 +427,7 @@ class Jacobian(object):
 
             self._matrix = new_array
 
-        if column_names is not None and column_name != self._column_names:
+        if column_names is not None and column_names != self._column_names:
             assert set(column_names) == set(self._column_names), "column_names must contain %s" % self._column_names
             new_array = np.empty_like(self._matrix)
 
@@ -583,7 +626,8 @@ class InverseJacobian(Jacobian):
         pinv_array = la.pinv(self._matrix)
         return Jacobian.from_array(pinv_array, self._column_names, self._row_names)
 
-class Twist(object):
+
+class Twist(GeometricPrimitive):
     """ xi = Twist(...)  element of se(3)
 
         .xi() - 6 x 1 - twist coordinates ndarray (om, v)
@@ -593,7 +637,7 @@ class Twist(object):
 
         ._xi - 6 x 1 - twist coordinates (om, v)
     """
-    def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None):
+    def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None, reference_frame=''):
         if xi is not None:
             self._xi = xi.squeeze()[:, None]
             assert self._xi.shape == (6,1)
@@ -610,6 +654,8 @@ class Twist(object):
             self._xi = np.asarray(vectorized)
         else:
             raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
+
+        super(Twist, self).__init__(reference_frame)
 
     def __repr__(self):
         output = self.__class__.__name__ + ": " + str(self.xi().squeeze())
@@ -642,6 +688,18 @@ class Twist(object):
     def _json(self):
         return self._xi.squeeze().tolist()
 
+    def __mul__(self, other):
+        if isinstance(other, Number):
+            result = self.copy()
+            result._xi *= other
+            return result
+
+    def __div__(self, other):
+        if isinstance(other, Number):
+            result = self.copy()
+            result._xi /= other
+            return result
+
 
 class Rotation(GeometricPrimitive):
     """ R = Rotation(...)  element of SO(3)
@@ -663,13 +721,15 @@ class Rotation(GeometricPrimitive):
         homog_array[:3, :3] = quaternion_matrix(quaternion)
         return cls(homog_array)
 
-    def __init__(self, homog_array=None):
+    def __init__(self, homog_array=None, reference_frame=''):
         if homog_array is None:
             self._R = np.identity(3)
         else:
             if homog_array.shape != (4,4):
                 raise ValueError('Input ndarray must be (4,4)')
             self._R = homog_array[0:3,0:3]
+
+        super(Rotation, self).__init__(reference_frame)
 
     def R(self):
         return self._R
@@ -682,8 +742,30 @@ class Rotation(GeometricPrimitive):
     def quaternion(self):
         return quaternion_from_matrix(self.R())
 
+    def axis_angle(self):
+        u = np.array([self._R[2, 1] - self._R[1, 2],
+                      self._R[0, 2] - self._R[2, 0],
+                      self._R[1, 0] - self._R[0, 1]])
+        return u
+
+
     def to_dict(self):
         return dict(zip(self.quaternion_names, self.quaternion()))
+
+    def __mul__(self, other):
+        if isinstance(other, Rotation):
+            result = self.copy()
+            result._R = self._R.dot(other._R)
+            return result
+
+        elif isinstance(other, np.ndarray):
+            return self._R.dot(other)
+
+    def T(self, child_frame_name=''):
+        result = self.copy()
+        result._R = result._R.T
+        result._reference_frame = child_frame_name
+        return result
 
 
 class Vector(GeometricPrimitive):
@@ -708,13 +790,15 @@ class Vector(GeometricPrimitive):
         homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
         return cls(homog_array)
 
-    def __init__(self, homog_array=None):
+    def __init__(self, homog_array=None, reference_frame=''):
         if homog_array is None:
             self._H = np.zeros(4)
         else:
             if homog_array.shape != (4,):
                 raise ValueError('Input ndarray must be (4,)')
             self._H = homog_array
+
+        super(Vector, self).__init__(reference_frame)
 
     def q(self):
         return self._H[0:3]
@@ -727,6 +811,9 @@ class Vector(GeometricPrimitive):
 
     def to_dict(self):
         return dict(zip(self.cartesian_names, self.q()))
+
+    def __sub__(self, other):
+        return Vector(homog_array=self.q() - other.q(), reference_frame=self._reference_frame)
 
 
 class Point(GeometricPrimitive):
@@ -751,7 +838,7 @@ class Point(GeometricPrimitive):
         homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
         return cls.from_cartesian(homog_array)
 
-    def __init__(self, homog_array=None, vectorized=None):
+    def __init__(self, homog_array=None, vectorized=None, reference_frame=''):
         if vectorized is not None:
             self._H = np.concatenate((vectorized, np.ones((1,))))
         elif homog_array is None:
@@ -761,6 +848,7 @@ class Point(GeometricPrimitive):
             if homog_array.shape != (4,):
                 raise ValueError('Input ndarray must be (4,)')
             self._H = homog_array
+        super(Point, self).__init__(reference_frame)
 
     def q(self):
         return self._H[0:3]
@@ -771,8 +859,8 @@ class Point(GeometricPrimitive):
     def error(self, other):
         return la.norm(self.q() - other.q())
 
-    # def diff(self, x):
-    #     return Vector(x=self.q() - x.q())
+    def __sub__(self, other):
+        return Vector(homog_array=self.q() - other.q(), reference_frame=self._reference_frame)
 
     def norm(self):
         return la.norm(self.q())
@@ -1537,6 +1625,7 @@ class WristStateSpaceModel(StateSpaceModel, MocapWrist):
     def unvectorize_estimation(self, state_vector, prefix=''):
         return self._state_vectorizer.unvectorize(state_vector, prefix)[0][0]
 
+
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
             optimize={'configs':True, 'twists':True, 'features':True}):
@@ -1628,6 +1717,17 @@ def generate_synthetic_observations(tree, num_obs=100):
         tree._compute_pox()
         feature_obs_dict_list.append(tree.observe_features())
     return configs, feature_obs_dict_list
+
+
+def differentiate(start, end, delta_time):
+    delta_time = float(delta_time)
+    if isinstance(start, Number) and isinstance(end, Number):
+        return (end - start) / delta_time
+
+    assert type(start) == type(end), "Types do not match (%s and %s)" % (type(start), type(end))
+
+    if hasattr(start, '__sub__'):
+        diff = end - start
 
 
 def main():
