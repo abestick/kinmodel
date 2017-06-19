@@ -15,53 +15,6 @@ from phasespace.mocap_definitions import MocapWrist
 from phasespace.load_mocap import transform_frame, find_homog_trans, MocapStream
 from copy import deepcopy
 
-## TODO: Put the following coordinate transform code wherever in the system the MocapStream is
-# iterated over
-#-----------------------------------------------------
-# Method to get the coordinates and indices of the object base frame markers from a kintree
-def get_kin_tree_base_markers(kin_tree):
-    #Get base marker names
-    base_markers = []
-    base_joint = self.kin_tree.get_root_joint()
-    for child in base_joint.children:
-        if not hasattr(child, 'children'):
-            # This is a feature
-            base_markers.append(child.name)
-
-    # Get mapping of marker names -> marker idxs
-    marker_indices = {}
-    for feature_name in self.kin_tree.get_features():
-        marker_indices[feature_name] = int(feature_name.split('_')[1])
-
-    # Get the desired coordinates of each base marker
-    base_frame_points = np.zeros((len(base_markers), 3, 1))
-    all_features = self.kin_tree.get_features()
-    for i, marker in enumerate(base_markers):
-        base_frame_points[i, :, 0] = all_features[marker].q()
-
-    base_idxs = [marker_indices[name] for name in base_markers]
-    return base_idxs, base_frame_points
-
-mocap_source = MocapArray(...) #or whatever other source you want
-mocap_stream = mocap_source.get_stream()
-mocap_stream.set_coordinates(base_idxs, base_frame_points)
-self._tf_pub = tf.TransformBroadcaster()
-
-for (frame, timestamp) in mocap_stream:
-    # Compute the current mocap->object_base transform and publish it
-    homog = npla.inv(mocap_stream.get_last_coordinates())
-    mocap_frame_name = self.mocap_source.get_frame_name()
-    if mocap_frame_name is not None:
-        self._tf_pub.sendTransform(homog[0:3, 3],
-                                   tf.transformations.quaternion_from_matrix(homog),
-                                   rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
-
-    # Then call each MocapTracker's process_frame() with frame as the argument
-
-#--------------------------------------------------------
-
-
-
 class MocapTracker(object):
     """A general tracker which processes frames from a mocap source to produce some output.
 
@@ -156,9 +109,35 @@ class MocapTracker(object):
             callback(result)
 
     def register_callback(self, callback):
+    	"""Registers a callback method which will be called once for every call to this tracker's
+        process_frame() method.
+
+        The callback method should accept a single argument, which will be a dict containing the 
+        output values produced by a particular subclass's _process_frame() method.
+
+        Args:
+        callback: function - a reference to the callback function
+        """
         self._callbacks.append(callback)
 
 class MocapFrameTracker(MocapTracker):
+	"""A tracker which tracks the pose of a moving coordinate frame, where the coordinate frame is
+    assumed to be rigidly affixed to some subset of the motion capture markers in each mocap frame.
+
+    Client code can specify the desired coordinates of the subset of mocap markers with
+    respect to the tracked frame using the tracked_frame_points argument. If this argument is left
+    unspecified, the tracker will wait for the first frame in which all the tracked points are
+    visible, then attach the frame with it's origin at the mean of the tracked points' positions,
+    and an identity rotation relative to the base frame.
+
+    Args:
+    name: string - the name of this tracker
+    tracked_frame_indices: list - the indices of the mocap points which are rigidly attached to the 
+        tracked frame
+    tracked_frame_points: (len(tracked_frame_indices), 3) ndarray - the desired coordinates of the 
+        tracked points with respect to the tracked frame. If None, this value is computed
+        automatically as described above
+    """
     def __init__(self, name, tracked_frame_indices, tracked_frame_points=None):
         super(MocapFrameTracker, self).__init__(name)
         self.tracked_frame_indices = tracked_frame_indices
@@ -166,6 +145,14 @@ class MocapFrameTracker(MocapTracker):
         self._last_transform = np.identity(4)
 
     def _process_frame(self, frame):
+    	"""Computes the pose of the tracked frame
+
+        Args:
+        frame: (N,3,1) ndarray - the mocap frame
+
+        Returns:
+        dict with a single key 'homog' mapped to the frame's pose
+        """
         if self.tracked_frame_points is None:
             tracked_frame_points = frame[self.tracked_frame_indices,:,0]
             if not np.any(np.isnan(tracked_frame_points)):
@@ -234,6 +221,15 @@ class MocapUkfTracker(MocapTracker):
         return self.state_space_model.unvectorize_estimation(state_vector)
 
     def _process_frame(self, frame):
+    	"""Computes the updated state of the system given the new frame.
+
+        Args:
+        frame: (N,3,1) ndarray - the mocap frame
+
+        Returns:
+        dict with three keys 'mean', 'covariance', and 'squared_residual', each mapped to the
+        corresponding output from the UKF
+        """
         # If its our first frame, converge the error in the filter
         if not self._initialized:
             state_vector, covariance, squared_residual = self._initialize_filter(frame)
@@ -278,7 +274,11 @@ class MocapUkfTracker(MocapTracker):
 
     def update_outputs(self, result):
         """
-        Calls callbacks, oublishes to topics, and to tf 
+        Calls callbacks, publishes to topics and to tf.
+
+        This class extends the MocapTracker implementation so it can publish the joint states on 
+        the topic joint_states_topic, in addition to returning the computed state directly and via
+        callbacks.
 
         Args:
         result: dict - the outputs from one step of this tracker
@@ -326,6 +326,14 @@ class MocapUkfTracker(MocapTracker):
 
 
 class KinematicTreeTracker(MocapUkfTracker):
+	"""Tracks the joint state of a KinematicTree instance given mocap frames.
+
+    Args:
+    name: string - the name of this tracker
+    kin_tree: KinematicTree - the tree to track
+    joint_states_topic: string - the topic to publish joint states on, or None if a publisher isn't 
+        needed
+    """
     def __init__(self, name, kin_tree, joint_states_topic=None):
         self.kin_tree = kin_tree
 
