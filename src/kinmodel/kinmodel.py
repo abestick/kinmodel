@@ -79,6 +79,7 @@ QUATERNION_NAMES = ('qw', 'qx', 'qy', 'qz')
 EULER_NAMES = ('roll', 'pitch', 'yaw')
 QUATERNION_POSE_NAMES = POSITION_NAMES + QUATERNION_NAMES
 EULER_POSE_NAMES = POSITION_NAMES + EULER_NAMES
+# TWIST_NAMES = ('omega_x', 'omega_y', 'omega_z', 'dx', 'dy', 'dz')
 
 
 class ReferenceFrameWarning(Warning):
@@ -342,6 +343,16 @@ class Transform(GeometricPrimitive):
             # return result as a Twist for unit time delta, expressed in the shared reference frame
             return Twist(omega=reference_rotation_vector, nu=nu.q(), reference_frame=self._reference_frame)
 
+    def transform(self, primitive):
+        assert isinstance(primitive, GeometricPrimitive), 'Can only transform GeometricPrimitves, you passed %s' \
+                                                          %type(primitive)
+
+        if isinstance(primitive, Twist):
+            return Twist(xi=self.adjoint().dot(primitive.xi()))
+
+        else:
+            return self * primitive
+
 
 class Jacobian(object):
 
@@ -411,7 +422,22 @@ class Jacobian(object):
 
     def vectorize(self, input_dict, rows):
         axis = self._row_names if rows else self._column_names
-        assert set(input_dict) == set(axis), '%s does not match %s' % (set(input_dict), set(axis))
+        if not set(input_dict) == set(axis):
+            new_dict={}
+            for prefix, primitive in input_dict.items():
+                try:
+                    new_dict.update(primitive.to_dict(prefix+'_'))
+                except AttributeError:
+                    raise ValueError('%s was not in %s nor is it a geometric primitive (%s)' %
+                                     (prefix, set(axis), type(primitive)))
+
+
+            assert set(new_dict) == set(axis), \
+                'dict of gemetric primitives was converted, but their elements %s do not match %s' % \
+                (set(new_dict), set(axis))
+
+            input_dict = new_dict
+
         return np.array([input_dict[dim] for dim in axis])
 
     def copy(self):
@@ -426,6 +452,7 @@ class Jacobian(object):
                 new_array[i, :] = self._matrix[self._row_names.index(row_name), :]
 
             self._matrix = new_array
+            self._row_names = row_names
 
         if column_names is not None and column_names != self._column_names:
             assert set(column_names) == set(self._column_names), "column_names must contain %s" % self._column_names
@@ -435,6 +462,7 @@ class Jacobian(object):
                 new_array[:, j] = self._matrix[:, self._column_names.index(column_name)]
 
             self._matrix = new_array
+            self._column_names = column_names
 
         return self
 
@@ -574,7 +602,7 @@ class Jacobian(object):
             return new_one
 
         else:
-            return new_one.append_horizontally(args[0], args[1:])
+            return new_one.append_horizontally(args[0], *args[1:])
 
     def append_vertically(self, other, *args):
         """
@@ -586,7 +614,7 @@ class Jacobian(object):
         if other is None:
             return self.copy()
 
-        assert set(self._row_names) == set(other._row_names), "Jacobians must have the same column names!"
+        assert set(self._column_names) == set(other._column_names), "Jacobians must have the same column names!"
         new_one = other.copy()
         new_one.reorder(column_names=self._column_names)
         new_one._matrix = np.vstack((self._matrix, new_one._matrix))
@@ -596,7 +624,7 @@ class Jacobian(object):
             return new_one
 
         else:
-            return new_one.append_vertically(args[0], args[1:])
+            return new_one.append_vertically(args[0], *args[1:])
 
     def pad(self, row_names=None, column_names=None):
         if row_names is not None:
@@ -637,6 +665,12 @@ class Twist(GeometricPrimitive):
 
         ._xi - 6 x 1 - twist coordinates (om, v)
     """
+
+    @classmethod
+    def from_dict(cls, dictionary, prefix=''):
+        xi = np.array([dictionary[prefix+key] for key in EULER_POSE_NAMES])
+        return cls(xi=xi)
+
     def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None, reference_frame=''):
         if xi is not None:
             self._xi = xi.squeeze()[:, None]
@@ -687,6 +721,9 @@ class Twist(GeometricPrimitive):
 
     def _json(self):
         return self._xi.squeeze().tolist()
+
+    def to_dict(self, prefix=''):
+        return {prefix+key: value for key, value in zip(EULER_POSE_NAMES, self._xi)}
 
     def __mul__(self, other):
         if isinstance(other, Number):
@@ -747,7 +784,6 @@ class Rotation(GeometricPrimitive):
                       self._R[0, 2] - self._R[2, 0],
                       self._R[1, 0] - self._R[0, 1]])
         return u
-
 
     def to_dict(self):
         return dict(zip(self.quaternion_names, self.quaternion()))
@@ -813,7 +849,7 @@ class Vector(GeometricPrimitive):
         return dict(zip(self.cartesian_names, self.q()))
 
     def __sub__(self, other):
-        return Vector(homog_array=self.q() - other.q(), reference_frame=self._reference_frame)
+        return Vector(homog_array=self.homog() - other.homog(), reference_frame=self._reference_frame)
 
 
 class Point(GeometricPrimitive):

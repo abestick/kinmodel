@@ -12,54 +12,8 @@ import kinmodel
 from .tools import unit_vector
 import numpy.linalg as npla
 from phasespace.mocap_definitions import MocapWrist
-from phasespace.load_mocap import transform_frame, find_homog_trans, MocapStream
+from phasespace.load_mocap import transform_frame, find_homog_trans, MocapStream, MocapTransformer
 from copy import deepcopy
-
-## TODO: Put the following coordinate transform code wherever in the system the MocapStream is
-# iterated over
-#-----------------------------------------------------
-# Method to get the coordinates and indices of the object base frame markers from a kintree
-def get_kin_tree_base_markers(kin_tree):
-    #Get base marker names
-    base_markers = []
-    base_joint = self.kin_tree.get_root_joint()
-    for child in base_joint.children:
-        if not hasattr(child, 'children'):
-            # This is a feature
-            base_markers.append(child.name)
-
-    # Get mapping of marker names -> marker idxs
-    marker_indices = {}
-    for feature_name in self.kin_tree.get_features():
-        marker_indices[feature_name] = int(feature_name.split('_')[1])
-
-    # Get the desired coordinates of each base marker
-    base_frame_points = np.zeros((len(base_markers), 3, 1))
-    all_features = self.kin_tree.get_features()
-    for i, marker in enumerate(base_markers):
-        base_frame_points[i, :, 0] = all_features[marker].q()
-
-    base_idxs = [marker_indices[name] for name in base_markers]
-    return base_idxs, base_frame_points
-
-mocap_source = MocapArray(...) #or whatever other source you want
-mocap_stream = mocap_source.get_stream()
-mocap_stream.set_coordinates(base_idxs, base_frame_points)
-self._tf_pub = tf.TransformBroadcaster()
-
-for (frame, timestamp) in mocap_stream:
-    # Compute the current mocap->object_base transform and publish it
-    homog = npla.inv(mocap_stream.get_last_coordinates())
-    mocap_frame_name = self.mocap_source.get_frame_name()
-    if mocap_frame_name is not None:
-        self._tf_pub.sendTransform(homog[0:3, 3],
-                                   tf.transformations.quaternion_from_matrix(homog),
-                                   rospy.Time.now(), '/object_base', '/' + mocap_frame_name)
-
-    # Then call each MocapTracker's process_frame() with frame as the argument
-
-#--------------------------------------------------------
-
 
 
 class MocapTracker(object):
@@ -71,10 +25,11 @@ class MocapTracker(object):
     """
     __metaclass__ = ABCMeta
 
-    def __init__(self, name):
+    def __init__(self, name, transformer=None):
         self.name = name
         self.exit = False
         self._callbacks = []
+        self._transformer = transformer
 
     def start(self):
         """Runs the thread to begin the tracker"""
@@ -113,7 +68,7 @@ class MocapTracker(object):
             result = self.process_frame(frame)
             if recorded_results is not None:
                 recorded_results.append(result)
-        self.mocap_source.unregister_buffer(stream)
+        mocap_source.unregister_buffer(stream)
         return recorded_results
 
     def process_frame(self, frame):
@@ -125,8 +80,10 @@ class MocapTracker(object):
         Returns:
         A dict of all the result values produced by this tracker's _process_frame method
         """
+        if self._transformer is not None:
+            frame = self._transformer.transform(frame)
         result = self._process_frame(frame)
-        self.update_outputs(result)
+        self._update_outputs(result)
         return result
 
     @abstractmethod
@@ -158,37 +115,38 @@ class MocapTracker(object):
     def register_callback(self, callback):
         self._callbacks.append(callback)
 
+
 class MocapFrameTracker(MocapTracker):
     def __init__(self, name, tracked_frame_indices, tracked_frame_points=None):
         super(MocapFrameTracker, self).__init__(name)
-        self.tracked_frame_indices = tracked_frame_indices
+        self.tracked_frame_indices = np.array(tracked_frame_indices)
         self.tracked_frame_points = tracked_frame_points
-        self._last_transform = np.identity(4)
+        self._last_transform = kinmodel.Transform(homog_array=np.identity(4))
 
     def _process_frame(self, frame):
         if self.tracked_frame_points is None:
-            tracked_frame_points = frame[self.tracked_frame_indices,:,0]
+            tracked_frame_points = frame[self.tracked_frame_indices, :, 0]
             if not np.any(np.isnan(tracked_frame_points)):
-                tracked_frame_points = tracked_frame_points - np.mean(tracked_frame_points, axis=1)
+                tracked_frame_points = tracked_frame_points - np.mean(tracked_frame_points, axis=0)
                 self.tracked_frame_points = tracked_frame_points
 
         if self.tracked_frame_points is not None:
             # Find which of the specified markers are visible in this frame
-            visible_inds = ~np.isnan(frame[self.tracked_frame_indices, :, 0]).any(axis=1)
+            visible_inds = ~np.isnan(frame[self.tracked_frame_indices, :]).any(axis=1).squeeze()
 
             # Compute the transformation
             orig_points = frame[self.tracked_frame_indices[visible_inds], :, 0]
             desired_points = self.tracked_frame_points[visible_inds]
             try:
-                homog = find_homog_trans(orig_points, desired_points)[0]
-                self._last_transform = homog
+                transform = kinmodel.Transform(homog_array=find_homog_trans(orig_points, desired_points)[0])
+                self._last_transform = transform
             except ValueError:
                 # Not enough points visible for tf.transformations to compute the transform
-                homog = self._last_transform
-            return {'homog': homog}
-        else:
-            return {}
+                transform = self._last_transform
 
+            return transform
+        else:
+            return None
 
 
 class MocapUkfTracker(MocapTracker):
@@ -196,13 +154,14 @@ class MocapUkfTracker(MocapTracker):
     A general class which pipes mocap points from a mocap source to a UKF
     """
 
-    def __init__(self, name, state_space_model, marker_indices, joint_states_topic=None):
+    def __init__(self, name, state_space_model, marker_indices, transformer=None, joint_states_topic=None,
+                 new_frame_callback=None):
         """
         Constructor
         :param state_space_model: the model which the UKF will be based on
         :param joint_states_topic: an optional topic upon which to publish tracker output
         """
-        super(MocapUkfTracker, self).__init__(name)
+        super(MocapUkfTracker, self).__init__(name, transformer)
 
         # copy across data
         self.state_space_model = state_space_model
@@ -245,8 +204,11 @@ class MocapUkfTracker(MocapTracker):
         estimation = self._unvectorize_estimation(state_vector)
 
         # And call the callbacks, publishers etc
-        result = {'mean':estimation, 'covariance':covariance, 'squared_residual':squared_residual}
+        # result = {'mean':estimation, 'covariance':covariance, 'squared_residual':squared_residual}
+        result = estimation
         self._update_outputs(result)
+
+        return result
 
     def _preprocess_frame(self, frame):
         # convert frame into observation dict and store
@@ -276,7 +238,7 @@ class MocapUkfTracker(MocapTracker):
         """
         return observation
 
-    def update_outputs(self, result):
+    def _update_outputs(self, result):
         """
         Calls callbacks, oublishes to topics, and to tf 
 
@@ -284,7 +246,7 @@ class MocapUkfTracker(MocapTracker):
         result: dict - the outputs from one step of this tracker
         """
         # Call superclass implementation so callbacks are handled properly
-        super(MocapUkfTracker, self).update_outputs(result)
+        super(MocapUkfTracker, self)._update_outputs(result)
 
         # Publish joint states
         if self._estimation_pub is not None:
@@ -327,16 +289,43 @@ class MocapUkfTracker(MocapTracker):
 
 class KinematicTreeTracker(MocapUkfTracker):
     def __init__(self, name, kin_tree, joint_states_topic=None):
-        self.kin_tree = kin_tree
+        self._kin_tree = kin_tree
+        transformer = MocapTransformer()
 
         # Get all the marker indices of interest and map to their names
         marker_indices = {}
-        for feature_name in self.kin_tree.get_features():
+        for feature_name in self._kin_tree.get_features():
             marker_indices[feature_name] = int(feature_name.split('_')[1])
 
-        state_space_model = kinmodel.KinematicTreeStateSpaceModel(self.kin_tree)
-        super(KinematicTreeTracker, self).__init__(name, state_space_model, marker_indices,
+        base_idxs, base_frame_points = self.get_kin_tree_base_markers()
+        transformer.set_coordinates(base_idxs, base_frame_points)
+
+        state_space_model = kinmodel.KinematicTreeStateSpaceModel(self._kin_tree)
+        super(KinematicTreeTracker, self).__init__(name, state_space_model, marker_indices, transformer,
             joint_states_topic)
+
+    def get_kin_tree_base_markers(self):
+        # Get base marker names
+        base_markers = []
+        base_joint = self._kin_tree.get_root_joint()
+        for child in base_joint.children:
+            if not hasattr(child, 'children'):
+                # This is a feature
+                base_markers.append(child.name)
+
+        # Get mapping of marker names -> marker idxs
+        marker_indices = {}
+        for feature_name in self._kin_tree.get_features():
+            marker_indices[feature_name] = int(feature_name.split('_')[1])
+
+        # Get the desired coordinates of each base marker
+        base_frame_points = np.zeros((len(base_markers), 3, 1))
+        all_features = self._kin_tree.get_features()
+        for i, marker in enumerate(base_markers):
+            base_frame_points[i, :, 0] = all_features[marker].q()
+
+        base_idxs = [marker_indices[name] for name in base_markers]
+        return base_idxs, base_frame_points
 
     def get_observation_func(self):
         """Get a function which takes a config dict for the KinematicTree being tracked
@@ -507,10 +496,11 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
     def __init__(self, kin_tree, base_tf_frame_name=None, convention='quaternion'):
         self._kin_tree = kin_tree
         self._joint_names = self._kin_tree.get_joints().keys()
+        self._joint_names.remove(self._kin_tree.get_root_joint().name)
 
         super(KinematicTreeExternalFrameTracker, self).__init__(base_tf_frame_name, convention)
 
-        self.attach_frame(self._kin_tree.get_root_joint(), 'root', pose=kinmodel.Transform())
+        self.attach_frame(self._kin_tree.get_root_joint().name, 'root', pose=kinmodel.Transform())
 
     def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
         # Attach a static frame to the tree
@@ -530,10 +520,9 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
             trans = trans / num_points
             homog = np.identity(4)
             homog[0:3, 3] = trans
-        else:
-            # Attach the frame at the specified pose
-            homog = pose.squeeze()
-        new_feature = kinmodel.Feature(frame_name, kinmodel.Transform(homog_array=homog))
+            pose = kinmodel.Transform(homog_array=homog)
+
+        new_feature = kinmodel.Feature(frame_name, pose)
         joints[joint_name].children.append(new_feature)
         self._attached_frame_names.append(frame_name)
         if tf_pub:
@@ -580,7 +569,6 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         row_names = [manip_name_frame + '_' + element for element in kinmodel.EULER_POSE_NAMES]
         minimial_jacobian = kinmodel.Jacobian(self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame),
                                               row_names)
-
         return minimial_jacobian.pad(column_names=self._joint_names).reorder(column_names=self._joint_names)
 
     def _update(self):
