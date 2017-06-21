@@ -216,9 +216,10 @@ class Joint(object):
         else:
             self.children = children #Children of the joint (other Joints)
 
+        # TODO: Remove code for old-style twists here
         if twist is None:
             self.twist = None
-        elif hasattr(twist, '_xi'):
+        elif hasattr(twist, '_xi') or isinstance(twist, ParameterizedJoint):
             self.twist = twist
         else:
             self.twist = new_geometric_primitive(twist)
@@ -239,6 +240,122 @@ class Joint(object):
             except AttributeError:
                 pass
         return json_dict
+
+
+class ParameterizedJoint(object):
+    """Base class for a joint with one or more degrees of freedom, parameterized by one or more
+    scalar parameters.
+
+    Each degree of freedom in a KinematicTree is parameterized by a single Twist. However, sometimes
+    it's useful to group joints together into multi-DoF compound joints (e.g. a 3 DoF ball joint)
+    or to allow only a subset of a Twist's six degrees of freedom to vary when fitting the tree.
+
+    ParameterizedJoint allows all these situations. Initialize an instance with a list of twists and
+    the current parameter values (as a list of scalars). Each 
+    """
+    __metaclass__ = ABCMeta
+
+    def __init__(self, params, json_attribs=['params']):
+        params = np.asarray(params).squeeze()
+        if params.ndim > 1:
+            raise ValueError('params must be a 1D array-like')
+        self._twists = None
+        self.params = params
+        self._json_attribs = json_attribs
+
+        # Let _set_params() populate the self._twists list
+        self.set_params(params)
+
+    def set_params(self, params):
+        params = np.asarray(params).squeeze()
+        if params.shape != self.params.shape:
+            raise ValueError('Expected a params vector of shape ' + str(self.params.shape))
+        self.params = params.tolist()
+        self._set_params(params)
+
+    def _set_twists(self, twists):
+        self._twists = twists
+
+    @abstractmethod
+    def _set_params(self, params):
+        pass
+
+    def get_params(self):
+        return np.asarray(self.params)
+
+    def exp(self, thetas):
+        thetas = np.asarray(thetas).squeeze()
+        if thetas.shape != (len(self._twists),):
+            raise ValueError('Exptected a thetas vector of shape (' + str(len(self._twists)) + ',)')
+        exps = []
+        for i, twist in enumerate(self._twists):
+            exps.append(twist.exp(thetas[i]))
+        return exps
+
+    def dexp(self, thetas):
+        thetas = np.asarray(thetas).squeeze()
+        if thetas.shape != (len(self._twists),):
+            raise ValueError('Exptected a thetas vector of shape (' + str(len(self._twists)) + ',)')
+        dexps = []
+        exps = self.exp(thetas)
+        prod_exp = Transform()
+        for i, twist in enumerate(self._twists):
+            dexps.append(Twist(xi=(prod_exp.adjoint().dot(twist.xi()))))
+            prod_exp = prod_exp * exps[i]
+        return dexps
+
+    def vectorize(self):
+        return np.array(self.params).squeeze()
+
+    def _json(self):
+        json_dict = OrderedDict()
+        json_dict['joint_type'] = type(self).__name__
+        for attrib in self._json_attribs:
+            json_dict[attrib] = getattr(self, attrib)
+        return json_dict
+
+    def __repr__(self):
+        output = self.__class__.__name__ + ": " + str(self.get_params())
+        return output
+
+    @classmethod
+    def from_list(cls, param_list):
+        param_list = np.asarray(param_list).squeeze()
+        if param_list.shape == (6,):
+            # 1 DoF twist joint
+            return OneDofTwistJoint(param_list)
+        elif param_list.shape == (3,):
+            # 3 DoF ball joint
+            return ThreeDofBallJoint(param_list)
+        else:
+            raise ValueError('param_list is not the correct shape for any joint type')
+
+    @classmethod
+    def from_dict(cls, attrib_dict):
+        types = {'OneDofTwistJoint': OneDofTwistJoint, 'ThreeDofBallJoint':ThreeDofBallJoint}
+        new_type = attrib_dict['joint_type']
+        del attrib_dict['joint_type']
+        return types[new_type](**attrib_dict)
+
+
+class OneDofTwistJoint(ParameterizedJoint):
+    def __init__(self, params=None):
+        super(OneDofTwistJoint, self).__init__(params, ['params'])
+
+    def _set_params(self, params):
+        self._set_twists([Twist(xi=params)])
+
+class ThreeDofBallJoint(ParameterizedJoint):
+    def __init__(self, params, joint_axes=[[1,0,0], [0,1,0], [0,0,1]]):
+        # Columns of joint_axes specify the axes of rotation in the zero config
+        self.joint_axes = joint_axes
+        super(ThreeDofBallJoint, self).__init__(params, ['params', 'joint_axes'])
+
+    def _set_params(self, params):
+        new_twists = []
+        for joint_axis in self.joint_axes:
+            new_twists.append(Twist(omega=params, nu=se3.skew(params).dot(np.array(joint_axis))))
+        self._set_twists(new_twists)
 
 
 class Transform(GeometricPrimitive):
@@ -913,6 +1030,8 @@ def obj_to_joint(orig_obj):
         return Joint(**orig_obj)
     elif 'primitive' in orig_obj:
         return Feature(**orig_obj)
+    elif 'joint_type' in orig_obj:
+        return ParameterizedJoint.from_dict(orig_obj)
     else:
         return orig_obj
 
