@@ -268,7 +268,7 @@ class ParameterizedJoint(object):
 
     def set_params(self, params):
         params = np.asarray(params).squeeze()
-        if params.shape != self.params.shape:
+        if params.shape != (len(self.params),):
             raise ValueError('Expected a params vector of shape ' + str(self.params.shape))
         self.params = params.tolist()
         self._set_params(params)
@@ -1330,7 +1330,10 @@ class KinematicTree(object):
             if parent_pox is None:
                 parent_pox = Transform()
             try:
-                root._pox = parent_pox * root.twist.exp(root._theta)
+                new_pox_list = root.twist.exp(root._theta)
+                root._pox = parent_pox
+                for pox in new_pox_list:
+                    root._pox = root._pox * pox
             except AttributeError:
                 # Root doesn't have a twist (joint is stationary), just copy the parent pox
                 root._pox = new_geometric_primitive(parent_pox)
@@ -1347,7 +1350,9 @@ class KinematicTree(object):
             if parent_pox is None:
                 parent_pox = Transform()
             try:
-                root._dpox = Twist(xi=(parent_pox.adjoint().dot(root.twist.xi())))
+                root._dpox = root.dexp(root._theta)
+                for i, dpox in enumerate(root._dpox):
+                    root._dpox[i] = Twist(xi=parent_pox.adjoint().dot(dpox.xi()))
             except AttributeError:
                 # Root doesn't have a twist (joint is stationary)
                 pass
@@ -1369,20 +1374,20 @@ class KinematicTree(object):
             observations[root.name] = root._pox * root.primitive
         return observations
 
-    def set_twists(self, twists, root=None, error_on_missing=True):
+    def set_params(self, params_dict, root=None, error_on_missing=True):
         self._pox_stale = True
         self._dpox_stale = True
         if root is None:
             root = self._root
         if hasattr(root, 'twist') and root.twist is not None:
             try:
-                root.twist = twists[root.name]
+                root.twist.set_params(params_dict[root.name])
             except KeyError:
                 if error_on_missing:
                     raise ValueError('Twist dict is missing an entry for joint: ' + root.name)
         if hasattr(root, 'children'):
             for child in root.children:
-                self.set_twists(twists, root=child, error_on_missing=error_on_missing)
+                self.set_params(params_dict, root=child, error_on_missing=error_on_missing)
 
     def set_features(self, features, root=None, error_on_missing=False):
         self._pox_stale = True
@@ -1398,19 +1403,19 @@ class KinematicTree(object):
             for child in root.children:
                 self.set_features(features, root=child, error_on_missing=error_on_missing)
 
-    def get_twists(self, root=None, twists=None):
+    def get_params(self, root=None, params_dict=None):
         if root is None:
             root = self._root
-        if twists is None:
-            twists = {}
+        if params_dict is None:
+            params_dict = {}
         try:
-            twists[root.name] = root.twist
+            params_dict[root.name] = root.twist.get_params()
         except AttributeError:
             pass
         if hasattr(root, 'children'):
             for child in root.children:
-                self.get_twists(root=child, twists=twists)
-        return twists
+                self.get_params(root=child, params_dict=params_dict)
+        return params_dict
 
     def get_features(self, root=None, features=None):
         if root is None:
