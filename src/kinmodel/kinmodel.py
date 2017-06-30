@@ -425,7 +425,7 @@ class Transform(GeometricPrimitive):
         pose = np.empty(6 + int(convention == 'quaternion'))
         pose[:3] = self.trans().q()
         if convention == 'quaternion':
-            pose[3:] = quaternion_from_matrix(self.R())
+            pose[3:] = quaternion_from_matrix(self.rot().homog())
 
         elif convention == 'euler':
             pose[3:] = euler_from_matrix(self.R())
@@ -889,7 +889,7 @@ class Rotation(GeometricPrimitive):
         return self._R
 
     def homog(self):
-        homog_matrix = np.zeros(4)
+        homog_matrix = np.identity(4)
         homog_matrix[0:3,0:3] = self._R
         return homog_matrix
 

@@ -11,9 +11,10 @@ import numpy as np
 import argparse
 import json
 import uuid
-import kinmodel.src.kinmodel.kinmodel.src.kinmodel.kinmodel
+import kinmodel
+import threading
 
-class MarkerAssignments():
+class MarkerAssignments(object):
     def __init__(self, kin_tree, assignments={}):
         #Create attributes to hold the last frame received, the list of markers 
         # to highlight, and the current group assignments
@@ -59,23 +60,70 @@ class MarkerAssignments():
 
     def assign_marker(self, marker_num, joint_name, name_prefix='mocap_'):
         joints = self._tree.get_joints()
-        primitive = kinmodel.src.kinmodel.kinmodel.new_geometric_primitive([0.0, 0.0, 0.0, 1.0])
-        feature = kinmodel.src.kinmodel.kinmodel.Feature(name_prefix + str(marker_num), primitive)
+        primitive = kinmodel.new_geometric_primitive([0.0, 0.0, 0.0, 1.0])
+        feature = kinmodel.Feature(name_prefix + str(marker_num), primitive)
         joints[joint_name].children.append(feature)
 
     def get_last_frame(self):
         return self._last_frame
 
 
+class MocapFilePlayer(object):
+    def __init__(self, npz_filename, topic='/mocap_point_cloud', framerate=50):
+        data_array = np.load(npz_filename)['full_sequence']
+        self._mocap_source = load_mocap.ArrayMocapSource(data_array, framerate)
+        self._pub = rospy.Publisher(topic, sensor_msgs.PointCloud)
+        self._thread = None
+        self._run = False
+        self._framerate = framerate
+
+    def run(self, loop=True):
+        while True:
+            mocap_stream = self._mocap_source.get_stream()
+            for (frame, timestamp) in mocap_stream:
+                if not self._run:
+                    return
+                time.sleep(1.0 / self._framerate)
+                new_message = sensor_msgs.PointCloud()
+                new_message.header = std_msgs.Header()
+                new_message.header.frame_id = 'mocap'
+                new_message.points = []
+                for point_idx in range(frame.shape[0]):
+                    point = geometry_msgs.Point32()
+                    point.x = frame[point_idx,0,0]
+                    point.y = frame[point_idx,1,0]
+                    point.z = frame[point_idx,2,0]
+                    new_message.points.append(point)
+                self._pub.publish(new_message)
+            if not loop:
+                break
+
+    def start(self, loop=True):
+        self._run = True
+        self._thread = threading.Thread(target=self.run, kwargs={'loop':loop})
+        self._thread.daemon = True
+        self._thread.start()
+
+    def stop(self):
+        self._run = False
+        self._thread.join()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('input_kinmodel_file', help='The input kinematic model')
     parser.add_argument('output_kinmodel_file', help='The output kinematic model')
-    # parser.add_argument('mocap_file', help='The .npz file with the mocap sequence')
+    parser.add_argument('--mocap_file', help='Optional .npz file with the mocap sequence')
     args = parser.parse_args()
+    rospy.init_node('marker_assignments')
+
+    # Start playing the mocap npz file, if specified
+    if args.mocap_file is not None:
+        mocap_player = MocapFilePlayer(args.mocap_file)
+        mocap_player.start()
 
     # Load the kinematic tree, list all joints, and delete existing markers
-    kin_tree = kinmodel.src.kinmodel.kinmodel.KinematicTree(json_filename=args.input_kinmodel_file)
+    kin_tree = kinmodel.KinematicTree(json_filename=args.input_kinmodel_file)
     tree_joints = kin_tree.get_joints()
     for joint in tree_joints:
         for child in tree_joints[joint].children:
@@ -83,16 +131,6 @@ def main():
                 # This is a feature - delete it
                 tree_joints[joint].children.remove(child)
 
-    # # Load the mocap file
-    # mocap_file = np.load(args.mocap_file)
-    # mocap_array = mocap_file['mocap']
-
-    # # List all markers seen at least once
-    # markers_seen = np.where(np.any(np.logical_not(np.isnan(mocap_array[:,0,:])), axis=1))
-
-    # # Iterate over each marker, ask for a joint assignment, and add a corresponding feature
-
-    rospy.init_node('marker_assignments')
     assign = MarkerAssignments(kin_tree)
 
     # Get the first mocap frame to determine how many markers there are
