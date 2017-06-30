@@ -11,7 +11,7 @@ import scipy.optimize
 import matplotlib.pyplot as plt
 import cProfile
 import json
-import kinmodel.src.kinmodel.kinmodel.src.kinmodel.kinmodel
+import kinmodel
 import matplotlib.pyplot as plt
 
 FRAMERATE = 50
@@ -27,11 +27,11 @@ def main():
 
     #Load the calibration sequence
     calib_data = np.load(args.mocap_npz)
-    ukf_mocap = load_mocap.MocapArray(calib_data['full_sequence'][:,:,:], FRAMERATE)
+    ukf_mocap = load_mocap.ArrayMocapSource(calib_data['full_sequence'][:,:,:], FRAMERATE).get_stream()
 
     # Get the base marker indices
     base_indices = []
-    kin_tree = kinmodel.src.kinmodel.kinmodel.KinematicTree(json_filename=args.kinmodel_json)
+    kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json)
     base_joint = kin_tree.get_root_joint()
     for child in base_joint.children:
         if not hasattr(child, 'children'):
@@ -48,7 +48,7 @@ def main():
     desired = desired - np.mean(desired, axis=0)
     data_array = np.dstack((calib_data['full_sequence'][:,:,0:1],
                                 calib_data['full_sequence'][:,:,calib_data[GROUP_NAME]]))
-    mocap = load_mocap.MocapArray(data_array, FRAMERATE)    
+    mocap = load_mocap.ArrayMocapSource(data_array, FRAMERATE).get_stream()    
 
     #Set the coordinate frame for the mocap sequence
     mocap.set_coordinates(base_indices, desired, mode='time_varying')
@@ -59,7 +59,7 @@ def main():
         feature_dict = {}
         for marker_idx in all_marker_indices:
             if not np.isnan(frame[marker_idx,0,0]):
-                obs_point = kinmodel.src.kinmodel.kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx, :, 0], np.ones(1))))
+                obs_point = kinmodel.new_geometric_primitive(np.concatenate((frame[marker_idx, :, 0], np.ones(1))))
                 feature_dict['mocap_' + str(marker_idx)] = obs_point
         feature_obs.append(feature_dict)
 
