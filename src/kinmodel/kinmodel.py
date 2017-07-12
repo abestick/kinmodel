@@ -736,19 +736,19 @@ class Twist(GeometricPrimitive):
 
     def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None, reference_frame=''):
         if xi is not None:
-            self._xi = xi.squeeze()[:, None]
+            self._xi = xi.squeeze()[:, None].astype('float64')
             assert self._xi.shape == (6,1)
         elif copy is not None:
             self._xi = copy.xi().copy()
         elif omega is not None and nu is not None:
-            omega = np.asarray(omega)
-            nu = np.asarray(nu)
+            omega = np.asarray(omega, dtype='float64')
+            nu = np.asarray(nu, dtype='float64')
             omega = np.reshape(omega, (3,1))
             nu = np.reshape(nu, (3,1))
             assert omega.shape == (3,1) and nu.shape == (3,1)
             self._xi = np.vstack((omega, nu))
         elif vectorized is not None:
-            self._xi = np.asarray(vectorized)
+            self._xi = np.asarray(vectorized, dtype='float64')
         else:
             raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
 
@@ -836,7 +836,7 @@ class Rotation(GeometricPrimitive):
         else:
             if homog_array.shape != (4,4):
                 raise ValueError('Input ndarray must be (4,4)')
-            self._R = homog_array[0:3,0:3]
+            self._R = homog_array[0:3,0:3].astype('float64')
 
         super(Rotation, self).__init__(reference_frame)
 
@@ -919,7 +919,7 @@ class Vector(GeometricPrimitive):
         else:
             if homog_array.shape != (4,):
                 raise ValueError('Input ndarray must be (4,)')
-            self._H = homog_array
+            self._H = homog_array.astype('float64')
 
         super(Vector, self).__init__(reference_frame)
 
@@ -1008,7 +1008,7 @@ class Point(GeometricPrimitive):
         else:
             if homog_array.shape != (4,):
                 raise ValueError('Input ndarray must be (4,)')
-            self._H = homog_array
+            self._H = homog_array.astype('float64')
         super(Point, self).__init__(reference_frame)
 
     def q(self):
