@@ -30,28 +30,32 @@ class abstractclassmethod(classmethod):
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
 
-def new_geometric_primitive(input_data):
-    homog_array = None
+def new_geometric_primitive(input_data, reference_frame=''):
+    try:
+        return float(input_data)
+    except TypeError:
+        pass
+
     # If the input is a GeometricPrimitive
     try:
         homog_array = input_data.homog()
     except AttributeError:
         # Otherwise, if it's an array-like object
-        homog_array = np.asarray(input_data)
+        homog_array = np.asarray(input_data, dtype=float)
         homog_array = homog_array.squeeze()
 
     if homog_array.shape == (4,4):
-        return Transform(homog_array)
+        return Transform(homog_array, reference_frame=reference_frame)
     elif homog_array.shape == (3,3):
-        return Rotation(homog_array)
+        return Rotation(homog_array, reference_frame=reference_frame)
     elif homog_array.shape == (4,) and homog_array[3] == 1:
-        return Point(homog_array)
+        return Point(homog_array, reference_frame=reference_frame)
     elif homog_array.shape == (3,):
-        return Point(np.append(homog_array, 1))
+        return Point(np.append(homog_array, 1), reference_frame=reference_frame)
     elif homog_array.shape == (4,) and homog_array[3] == 0:
-        return Vector(homog_array)
+        return Vector(homog_array, reference_frame=reference_frame)
     elif homog_array.shape == (6,):
-        return Twist(omega=homog_array[0:3], nu=homog_array[3:6])
+        return Twist(omega=homog_array[0:3], nu=homog_array[3:6], reference_frame=reference_frame)
     else:
         raise TypeError('input_data must be array-like or a GeometricPrimitive')
 
@@ -76,8 +80,8 @@ def stack(*args, **kwargs):
 
 
 POSITION_NAMES = ('x', 'y', 'z')
-QUATERNION_NAMES = ('qw', 'qx', 'qy', 'qz')
-EULER_NAMES = ('roll', 'pitch', 'yaw')
+QUATERNION_NAMES = ('w', 'i', 'j', 'k')
+EULER_NAMES = ('a', 'b', 'c')
 QUATERNION_POSE_NAMES = POSITION_NAMES + QUATERNION_NAMES
 EULER_POSE_NAMES = POSITION_NAMES + EULER_NAMES
 # TWIST_NAMES = ('omega_x', 'omega_y', 'omega_z', 'dx', 'dy', 'dz')
@@ -89,6 +93,18 @@ class ReferenceFrameWarning(Warning):
         op_str = '' if operation is None else ' (%s)' % operation
         super(ReferenceFrameWarning, self).__init__('Performing a frame dependent operation%s on two primitives of '
                                                     'different frames (%s and %s)' % (op_str, frame_a, frame_b))
+
+
+def check_reference_frames(operator_method):
+    def method_wrapper(self, other):
+        if isinstance(other, GeometricPrimitive):
+            if self._reference_frame != other._reference_frame:
+                warnings.warn(ReferenceFrameWarning(self._reference_frame, other._reference_frame,
+                                                    operator_method.__name__))
+
+        return operator_method(self, other)
+
+    return method_wrapper
 
 
 class StateSpaceModel(object):
@@ -140,6 +156,10 @@ class GeometricPrimitive(object):
     def __init__(self, reference_frame=''):
         self._reference_frame = reference_frame
 
+    @abstractmethod
+    def __array__(self, dtype=float):
+        pass
+
     @abstractclassmethod
     def from_dict(cls, dictionary):
         pass
@@ -163,11 +183,22 @@ class GeometricPrimitive(object):
         homog_result = homog1.dot(homog2)
         return new_geometric_primitive(homog_result)
 
+    @abstractmethod
+    def __div__(self, other):
+        pass
+
+    def __truediv__(self, other):
+        return self.__div__(other)
+
     def _json(self):
         return self.homog().squeeze().tolist()
 
     @abstractmethod
     def to_dict(self):
+        pass
+
+    @abstractmethod
+    def names(self, prefix=''):
         pass
 
     def reference_frame(self):
@@ -466,6 +497,9 @@ class Transform(GeometricPrimitive):
     def to_dict(self, convention='euler'):
         return dict(zip(self.conventions[convention], self.pose(convention)))
 
+    def names(self, prefix='', convention='euler'):
+        return [prefix+name for name in self.conventions[convention]]
+
     def adjoint(self):
         adj = np.zeros((6,6))
         adj[:3,:3] = self.R()
@@ -473,13 +507,9 @@ class Transform(GeometricPrimitive):
         adj[3:,:3] = se3.skew(self.p()).dot(self.R())
         return adj
 
+    @check_reference_frames
     def __sub__(self, other):
         if isinstance(other, Transform):
-
-            # If the reference frames are not the same, warn of this
-            if self._reference_frame != other._reference_frame:
-                warnings.warn(ReferenceFrameWarning(self._reference_frame, other._reference_frame, 'subtraction'))
-
             nu = self.trans() - other.trans() # the difference in position in the shared reference frame
             relative_rotation = self.rot().T() * other.rot() # the relative rotation
             relative_rotation_vector = relative_rotation.axis_angle() # the axis-angle vector in this one's child frame
@@ -487,6 +517,22 @@ class Transform(GeometricPrimitive):
 
             # return result as a Twist for unit time delta, expressed in the shared reference frame
             return Twist(omega=reference_rotation_vector, nu=nu.q(), reference_frame=self._reference_frame)
+
+    def __div__(self, other):
+        if isinstance(other, Number):
+            new = self.copy()
+            new._H /= other
+            new._H[-1, -1] = 1
+            return new
+
+        elif isinstance(other, Transform):
+            return other.inv() * self
+
+        else:
+            raise NotImplementedError()
+
+    def __array__(self, dtype=float):
+        return self.pose().astype(dtype=dtype)
 
     def transform(self, primitive):
         assert isinstance(primitive, GeometricPrimitive), 'Can only transform GeometricPrimitves, you passed %s' \
@@ -524,10 +570,14 @@ class Jacobian(object):
 
     @classmethod
     def hstack(cls, jacobians):
+        if len(jacobians) == 1:
+            return jacobians[0].copy()
         return jacobians[0].append_horizontally(*jacobians[1:])
 
     @classmethod
     def vstack(cls, jacobians):
+        if len(jacobians) == 1:
+            return jacobians[0].copy()
         return jacobians[0].append_vertically(*jacobians[1:])
 
     @classmethod
@@ -566,9 +616,20 @@ class Jacobian(object):
             self._matrix[:, j] = column
 
     def vectorize(self, input_dict, rows):
+        """
+        Takes a dictionary and produces a vector ordered according to the rows/columns of the Jacobian
+        :param input_dict: the dictionary to be converted to a numpy array
+        :param rows: a boolean indicating if it is to be orded according to the rows (false for columns)
+        :return: a numpy array
+        """
+        # Get the right axis as specified by the rows flag
         axis = self._row_names if rows else self._column_names
+
+        # If the keys do not match
         if not set(input_dict) == set(axis):
             new_dict={}
+
+            # Loop through each of the dictionary items
             for prefix, primitive in input_dict.items():
                 try:
                     new_dict.update(primitive.to_dict(prefix+'_'))
@@ -582,7 +643,6 @@ class Jacobian(object):
                 (set(new_dict), set(axis))
 
             input_dict = new_dict
-
         return np.array([input_dict[dim] for dim in axis])
 
     def copy(self):
@@ -665,7 +725,7 @@ class Jacobian(object):
 
         if isinstance(other, dict):
             other = self.vectorize(other, rows=True)
-            return dict(zip(self._column_names, other.dot(self._matrix)))
+            return dict(zip(self._column_names, other.dot(self._matrix).squeeze()))
 
         elif isinstance(other, np.ndarray):
             return other.dot(self._matrix)
@@ -811,9 +871,12 @@ class Twist(GeometricPrimitive):
         ._xi - 6 x 1 - twist coordinates (om, v)
     """
 
+    twist_names = EULER_POSE_NAMES
+
     @classmethod
-    def from_dict(cls, dictionary, prefix=''):
-        xi = np.array([dictionary[prefix+key] for key in EULER_POSE_NAMES])
+    def from_dict(cls, dictionary):
+        new_dict = {key[-1]: value for key, value in dictionary.items()}
+        xi = np.array([new_dict[key] for key in EULER_POSE_NAMES])
         return cls(xi=xi)
 
     def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None, reference_frame=''):
@@ -868,7 +931,13 @@ class Twist(GeometricPrimitive):
         return self._xi.squeeze().tolist()
 
     def to_dict(self, prefix=''):
-        return {prefix+key: value for key, value in zip(EULER_POSE_NAMES, self._xi)}
+        return {prefix+key: value for key, value in zip(self.twist_names, self._xi)}
+
+    def names(self, prefix=''):
+        return [prefix + name for name in self.twist_names]
+
+    def __array__(self, dtype=float):
+        return self._xi.squeeze().astype(dtype=dtype)
 
     def __mul__(self, other):
         if isinstance(other, Number):
@@ -881,6 +950,9 @@ class Twist(GeometricPrimitive):
             result = self.copy()
             result._xi /= other
             return result
+
+    def __add__(self, other):
+        return Twist(xi=self._xi + other._xi)
 
 
 class Rotation(GeometricPrimitive):
@@ -933,6 +1005,9 @@ class Rotation(GeometricPrimitive):
     def to_dict(self):
         return dict(zip(self.quaternion_names, self.quaternion()))
 
+    def names(self, prefix=''):
+        return [prefix + name for name in self.quaternion_names]
+
     def __mul__(self, other):
         if isinstance(other, Rotation):
             result = self.copy()
@@ -941,6 +1016,18 @@ class Rotation(GeometricPrimitive):
 
         elif isinstance(other, np.ndarray):
             return self._R.dot(other)
+
+    def __div__(self, other):
+        if isinstance(other, float):
+            new = self.copy()
+            new._H /= other
+            return new
+
+        else:
+            raise NotImplementedError()
+
+    def __array__(self, dtype=float):
+        return self.quaternion().astype(dtype=dtype)
 
     def T(self, child_frame_name=''):
         result = self.copy()
@@ -993,8 +1080,46 @@ class Vector(GeometricPrimitive):
     def to_dict(self):
         return dict(zip(self.cartesian_names, self.q()))
 
+    def names(self, prefix=''):
+        return [prefix + name for name in self.cartesian_names]
+
+    @check_reference_frames
+    def __add__(self, other):
+
+        if isinstance(other, (Vector, Point)):
+            return new_geometric_primitive(self.homog() + other.homog(), reference_frame=other._reference_frame)
+
+        elif isinstance(other, Number):
+            return Vector(self._H + other)
+
+        else:
+            raise NotImplementedError()
+
+    @check_reference_frames
     def __sub__(self, other):
-        return Vector(homog_array=self.homog() - other.homog(), reference_frame=self._reference_frame)
+        if isinstance(other, Vector):
+            return Vector(self.homog() - other.homog(), reference_frame=other._reference_frame)
+
+        elif isinstance(other, Point):
+            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame)
+
+        elif isinstance(other, Number):
+            return Vector(self._H - other)
+
+        else:
+            raise NotImplementedError()
+
+    def __div__(self, other):
+        if isinstance(other, float):
+            new = self.copy()
+            new._H /= other
+            return new
+
+        else:
+            raise NotImplementedError()
+
+    def __array__(self, dtype=float):
+        return self.q().astype(dtype=dtype)
 
 
 class Point(GeometricPrimitive):
@@ -1040,8 +1165,43 @@ class Point(GeometricPrimitive):
     def error(self, other):
         return la.norm(self.q() - other.q())
 
+    @check_reference_frames
     def __sub__(self, other):
-        return Vector(homog_array=self.q() - other.q(), reference_frame=self._reference_frame)
+        if isinstance(other, Point):
+            return Vector(self.homog() - other.homog(), reference_frame=other._reference_frame)
+
+        elif isinstance(other, Vector):
+            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame)
+
+        elif isinstance(other, Number):
+            return Vector(self._H - other)
+
+        else:
+            raise NotImplementedError()
+
+    @check_reference_frames
+    def __add__(self, other):
+        if isinstance(other, (Point, Vector)):
+            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame)
+
+        elif isinstance(other, Number):
+            return Vector(self._H - other)
+
+        else:
+            raise NotImplementedError()
+
+    def __div__(self, other):
+        if isinstance(other, float):
+            new = self.copy()
+            new._H /= other
+            new.H[-1] = 1
+            return new
+
+        else:
+            raise NotImplementedError()
+
+    def __array__(self, dtype=float):
+        return self.q().astype(dtype=dtype)
 
     def norm(self):
         return la.norm(self.q())
@@ -1051,6 +1211,9 @@ class Point(GeometricPrimitive):
 
     def to_dict(self):
         return dict(zip(self.cartesian_names, self.q()))
+
+    def names(self, prefix=''):
+        return [prefix + name for name in self.cartesian_names]
 
 
 def obj_to_joint(orig_obj):
