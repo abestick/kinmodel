@@ -1724,6 +1724,7 @@ class KinematicTree(object):
                 norm_constant = final_params[twist].normalize()
                 for config in final_configs:
                     config[twist] = config[twist] * norm_constant
+            self.set_params(final_params)
 
         #Set the tree's features to the optimal values
         if final_features is not None:
@@ -2053,15 +2054,24 @@ class KinematicTreeObjectiveFunction(object):
         return configs, twists, features
 
 
-def generate_synthetic_observations(tree, num_obs=100):
+def generate_synthetic_observations(tree, num_obs=100, continuous_configs='False'):
     # Get the state dimension of each movable joint in the tree
     movable_joint_dims = {name:np.asarray(tree.get_config()[name]).shape for name in tree.get_params() if tree.get_params()[name] is not None}
 
     # Generate random combinations of joint angles and output to a list of dicts
     configs = []
-    configs.append({name:np.zeros(movable_joint_dims[name]) for name in movable_joint_dims})
-    for i in range(num_obs - 1):
-        configs.append({name:((2*pi*nprand.random(movable_joint_dims[name]))-pi) for name in movable_joint_dims})
+    if continuous_configs:
+        FREQ_MIN_MAX = (0.01, 0.1)
+        # Randomly generate frequency values for each joint's motion
+        movable_joint_freqs = {name:nprand.uniform(*FREQ_MIN_MAX, size=movable_joint_dims[name]) for name in movable_joint_dims}
+
+        # Evaluate each joint's sine function at the current time value and append to config list
+        for i in range(num_obs):
+            configs.append({name:np.sin(movable_joint_freqs[name]*i) for name in movable_joint_dims})
+    else:
+        configs.append({name:np.zeros(movable_joint_dims[name]) for name in movable_joint_dims})
+        for i in range(num_obs - 1):
+            configs.append({name:((2*pi*nprand.random(movable_joint_dims[name]))-pi) for name in movable_joint_dims})
 
     # Observe features for each config and make a list of feature obs dicts
     feature_obs_dict_list = []
@@ -2114,11 +2124,10 @@ def main():
 
     #Test parameter optimization
     tree.set_config({'joint1':[0, 0, 0], 'joint2':[0]})
-
     configs, feature_obs = generate_synthetic_observations(tree, 20)
     final_configs, final_twists, final_features = tree.fit_params(feature_obs, configs=None, 
             optimize={'configs':True, 'params':True, 'features':False})
-    1/0
+
 
 if __name__ == '__main__':
     main()
