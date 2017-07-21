@@ -61,6 +61,7 @@ class MocapTracker(object):
             recorded_results = None
         stream = mocap_source.get_stream()
         for i, (frame, timestamp) in enumerate(stream):
+            print(i)
             if self.exit:
                 break
             if mocap_transformer is not None:
@@ -728,11 +729,11 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
 
     def get_observation_func(self):
         """Get a function which takes a config dict for the KinematicTree being tracked
-		and returns a dict of frame observations at that config.
+        and returns a dict of frame observations at that config.
 
-		Note that the returned function is NOT thread safe at the moment. Calling
-		obs_func while running this tracker in another thread may cause weird, intermittent bugs.
-		"""
+        Note that the returned function is NOT thread safe at the moment. Calling
+        obs_func while running this tracker in another thread may cause weird, intermittent bugs.
+        """
         def obs_func(state_dict):
             """Observation function which returns the frame observations at the specifed state.
 

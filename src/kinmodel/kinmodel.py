@@ -1843,14 +1843,13 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
         # Initialize the state vectorizer to output only config values
         self._state_vectorizer = KinematicTreeParamVectorizer()
-        tree_joints = self._tree.get_joints()
-        initial_config = {joint:0.0 for joint in tree_joints if tree_joints[joint].twist is not None}
-        self._state_vectorizer.vectorize(configs=[initial_config])
+        params = self._tree.get_params()
+        initial_config = {name: np.zeros(params[name].config_shape()) for name in params if params[name] is not None}
+        self._state_length = len(self._state_vectorizer.vectorize(configs=[initial_config]))
 
         # Initialize the measurement vectorizer to output only feature values
         self._meas_vectorizer = KinematicTreeParamVectorizer()
         self._meas_vectorizer.vectorize(features=self._tree.get_features())
-        self._state_length = len(initial_config)
         self._state_names = initial_config.keys()
 
     def measurement_model(self, state_vector):
@@ -1859,7 +1858,7 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
         Returned array is (sum(len(feature_i.vectorize())),).
         """
         # Shape array correctly
-        state_vector = state_vector.squeeze()
+        state_vector = np.atleast_1d(state_vector.squeeze())
         if state_vector.ndim < 2:
             state_vector = state_vector[:,None]
         output_arr = None
@@ -1870,7 +1869,6 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
             # Set the kinematic tree to the correct config, observe features, vectorize, and return
             self._tree.set_config(config_dict)
-            self._tree._compute_pox()
             feature_obs = self._tree.observe_features()
             output_obs = self._meas_vectorizer.vectorize(features=feature_obs)
 
