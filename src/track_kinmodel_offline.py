@@ -21,11 +21,8 @@ def main():
 
     #Load the calibration sequence
     calib_data = np.load(args.mocap_npz)['full_sequence'][:,:,:]
-    ukf_mocap = load_mocap.MocapArray(calib_data, FRAMERATE)
+    ukf_mocap = load_mocap.ArrayMocapSource(calib_data, FRAMERATE)
 
-
-    # Load the mocap stream
-    # ukf_mocap = load_mocap.PointCloudStream('/mocap_point_cloud')
 
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
     kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
@@ -38,33 +35,27 @@ def main():
     # frame_tracker.attach_tf_frame('joint3', 'left_hand')
     # frame_tracker.attach_tf_frame('joint2', 'base')
 
-    all_frames = []
-    all_covariances = []
-    all_residuals = []
-
-    def new_frame_callback(i, joint_angles, covariance, squared_residual):
-        # frame_tracker.set_config({'joint2':joint_angles[0], 'joint3':joint_angles[1]})
-        # print(frame_tracker.compute_jacobian('base', 'left_hand'))
-        print(i)
-        all_frames.append(joint_angles)
-        all_covariances.append(covariance[:,:,None])
-        all_residuals.append(squared_residual)
-
     # tracker = KinematicTreeTracker(tracker_kin_tree, ukf_mocap, joint_states_topic='/kinmodel_state',
     #         object_tf_frame='/object_base', new_frame_callback=new_frame_callback)
-    tracker = KinematicTreeTracker('cardboard', tracker_kin_tree, ukf_mocap, new_frame_callback=new_frame_callback)
-    tracker.run()
-    # tracker.start().join()
-    ukf_output = np.concatenate(all_frames, axis=1)
-    ukf_covar = np.concatenate(all_covariances, axis=2)
-    ukf_residual = np.array(all_residuals)
+    tracker = KinematicTreeTracker('cardboard', tracker_kin_tree)
+    tracker_output = tracker.run(ukf_mocap, record=True)
 
-    # Figure 2 - Mocap xyz trajectories
-    fig = plt.figure(figsize=(16,6))
-    ax = fig.add_subplot(111)
-    ax.plot(ukf_output.T)#, color='r')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('$\\theta$ (rad)')
+    joint_traj = []
+    for output in tracker_output:
+        output_list = []
+        for joint_name in output:
+            output_list.extend(np.atleast_1d(output[joint_name].squeeze()).tolist())
+        joint_traj.append(output_list)
+    joint_traj = np.array(joint_traj)
+    plt.plot(joint_traj)
+    plt.pause(100)
+
+    # # Figure 2 - Mocap xyz trajectories
+    # fig = plt.figure(figsize=(16,6))
+    # ax = fig.add_subplot(111)
+    # ax.plot(ukf_output.T)#, color='r')
+    # ax.set_xlabel('Time (s)')
+    # ax.set_ylabel('$\\theta$ (rad)')
 
     # # # Figure 1 - Box static mocap markers
     # ukf_mocap.plot_frame(0, xyz_rotation=(math.pi/2, 0, math.pi/180*120))
@@ -118,7 +109,7 @@ def main():
     # ax3.set_ylabel('SSE ($m^2$)')
     # # ax3.legend(['$\\mu_2$', '$\\mu_2 \pm \\sigma^2_2$'])
     # print('MSE: ' + str(np.mean(ukf_residual)))
-    plt.pause(100)
+    1/0
 
     
 if __name__ == '__main__':

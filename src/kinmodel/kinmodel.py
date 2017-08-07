@@ -3,6 +3,7 @@ from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
 import numpy as np
 import numpy.linalg as la
+import numpy.random as nprand
 import scipy.optimize
 import se3
 from math import pi, log10, sqrt
@@ -247,9 +248,10 @@ class Joint(object):
         else:
             self.children = children #Children of the joint (other Joints)
 
+        # TODO: Remove code for old-style twists here
         if twist is None:
             self.twist = None
-        elif hasattr(twist, '_xi'):
+        elif hasattr(twist, '_xi') or isinstance(twist, ParameterizedJoint):
             self.twist = twist
         else:
             self.twist = new_geometric_primitive(twist)
@@ -270,6 +272,149 @@ class Joint(object):
             except AttributeError:
                 pass
         return json_dict
+
+
+class ParameterizedJoint(object):
+    """Base class for a joint with one or more degrees of freedom, parameterized by one or more
+    scalar parameters.
+
+    Each degree of freedom in a KinematicTree is parameterized by a single Twist. However, sometimes
+    it's useful to group joints together into multi-DoF compound joints (e.g. a 3 DoF ball joint)
+    or to allow only a subset of a Twist's six degrees of freedom to vary when fitting the tree.
+
+    ParameterizedJoint allows all these situations. Initialize an instance with a list of twists and
+    the current parameter values (as a list of scalars). Each 
+    """
+    __metaclass__ = ABCMeta
+
+    def __init__(self, params, static_param_attribs=[]):
+        params = np.atleast_1d(np.asarray(params).squeeze())
+        if params.ndim > 1:
+            raise ValueError('params must be a 1D array-like')
+        self._twists = None
+        self.params = params
+        self._static_params = static_param_attribs
+
+        # Let _set_params() populate the self._twists list
+        self._set_params(params)
+
+    def _set_twists(self, twists):
+        self._twists = twists
+
+    def _get_twists(self):
+        return self._twists
+
+    def config_shape(self):
+        """Returns the shape of the config ndarray expected by exp() and dexp()
+        """
+        return (len(self._twists),)
+
+    @abstractmethod
+    def _set_params(self, params):
+        pass
+
+    @abstractmethod
+    def normalize(self):
+        """Normalizes the twists in a joint, returns the scaling constants to apply to each 
+        config variable to yield an unchanged configuration.
+        """
+        pass
+
+    def exp(self, thetas):
+        thetas = np.atleast_1d(np.asarray(thetas).squeeze())
+        if thetas.shape != (len(self._twists),):
+            raise ValueError('Exptected a thetas vector of shape (' + str(len(self._twists)) + ',)')
+        exps = []
+        for i, twist in enumerate(self._twists):
+            exps.append(twist.exp(thetas[i]))
+        return exps
+
+    def dexp(self, thetas):
+        thetas = np.atleast_1d(np.asarray(thetas).squeeze())
+        if thetas.shape != (len(self._twists),):
+            raise ValueError('Exptected a thetas vector of shape (' + str(len(self._twists)) + ',)')
+        dexps = []
+        exps = self.exp(thetas)
+        prod_exp = Transform()
+        for i, twist in enumerate(self._twists):
+            dexps.append(Twist(xi=(prod_exp.adjoint().dot(twist.xi()))))
+            prod_exp = prod_exp * exps[i]
+        return dexps
+
+    def vectorize(self):
+        return np.asarray(self.params)
+
+    def to_dict(self):
+        json_dict = OrderedDict()
+        json_dict['joint_type'] = type(self).__name__
+        json_dict['params'] = self.params.tolist()
+        for attrib in self._static_params:
+            json_dict[attrib] = getattr(self, attrib)
+            try:
+                json_dict[attrib] = json_dict[attrib].tolist()
+            except AttributeError:
+                # This isn't an ndarray, no need to list-ify it
+                pass
+        return json_dict
+
+    def _json(self):
+        return self.to_dict()
+
+    def __repr__(self):
+        output = self.__class__.__name__ + ": " + str(self.vectorize())
+        return output
+
+    @classmethod
+    def from_list(cls, param_list):
+        param_list = np.atleast_1d(np.asarray(param_list).squeeze())
+        if param_list.shape == (6,):
+            # 1 DoF twist joint
+            return OneDofTwistJoint(param_list)
+        elif param_list.shape == (3,):
+            # 3 DoF ball joint
+            return ThreeDofBallJoint(param_list)
+        else:
+            raise ValueError('param_list is not the correct shape for any joint type')
+
+    @classmethod
+    def from_dict(cls, attrib_dict):
+        types = {'OneDofTwistJoint': OneDofTwistJoint, 'ThreeDofBallJoint':ThreeDofBallJoint}
+        attrib_dict = attrib_dict.copy()
+        new_type = attrib_dict['joint_type']
+        del attrib_dict['joint_type']
+        return types[new_type](**attrib_dict)
+
+
+class OneDofTwistJoint(ParameterizedJoint):
+    def __init__(self, params=None):
+        super(OneDofTwistJoint, self).__init__(params, [])
+
+    def _set_params(self, params):
+        self._set_twists([Twist(xi=params)])
+
+    def normalize(self):
+        twist = self._get_twists()[0]
+        norm_constant = la.norm(twist.omega())
+        new_twist = Twist(xi=(twist.xi()/norm_constant))
+        self._set_twists([new_twist])
+        self.params = np.squeeze(twist.xi()/norm_constant)
+        return np.array((norm_constant,))
+
+
+class ThreeDofBallJoint(ParameterizedJoint):
+    def __init__(self, params, joint_axes=[[1,0,0], [0,1,0], [0,0,1]]):
+        # Columns of joint_axes specify the axes of rotation in the zero config
+        self.joint_axes = joint_axes
+        super(ThreeDofBallJoint, self).__init__(params, ['joint_axes'])
+
+    def _set_params(self, params):
+        new_twists = []
+        for joint_axis in self.joint_axes:
+            new_twists.append(Twist(omega=np.array(joint_axis), nu=se3.skew(params).dot(np.array(joint_axis))))
+        self._set_twists(new_twists)
+
+    def normalize(self):
+        return np.ones(3)
 
 
 class Transform(GeometricPrimitive):
@@ -1118,6 +1263,8 @@ def obj_to_joint(orig_obj):
         return Joint(**orig_obj)
     elif 'primitive' in orig_obj:
         return Feature(**orig_obj)
+    elif 'joint_type' in orig_obj:
+        return ParameterizedJoint.from_dict(orig_obj)
     else:
         return orig_obj
 
@@ -1416,7 +1563,10 @@ class KinematicTree(object):
             if parent_pox is None:
                 parent_pox = Transform()
             try:
-                root._pox = parent_pox * root.twist.exp(root._theta)
+                new_pox_list = root.twist.exp(root._theta)
+                root._pox = parent_pox
+                for pox in new_pox_list:
+                    root._pox = root._pox * pox
             except AttributeError:
                 # Root doesn't have a twist (joint is stationary), just copy the parent pox
                 root._pox = new_geometric_primitive(parent_pox)
@@ -1433,7 +1583,9 @@ class KinematicTree(object):
             if parent_pox is None:
                 parent_pox = Transform()
             try:
-                root._dpox = Twist(xi=(parent_pox.adjoint().dot(root.twist.xi())))
+                root._dpox = root.dexp(root._theta)
+                for i, dpox in enumerate(root._dpox):
+                    root._dpox[i] = Twist(xi=parent_pox.adjoint().dot(dpox.xi()))
             except AttributeError:
                 # Root doesn't have a twist (joint is stationary)
                 pass
@@ -1455,20 +1607,20 @@ class KinematicTree(object):
             observations[root.name] = root._pox * root.primitive
         return observations
 
-    def set_twists(self, twists, root=None, error_on_missing=True):
+    def set_params(self, params_dict, root=None, error_on_missing=True):
         self._pox_stale = True
         self._dpox_stale = True
         if root is None:
             root = self._root
         if hasattr(root, 'twist') and root.twist is not None:
             try:
-                root.twist = twists[root.name]
+                root.twist = params_dict[root.name]
             except KeyError:
                 if error_on_missing:
                     raise ValueError('Twist dict is missing an entry for joint: ' + root.name)
         if hasattr(root, 'children'):
             for child in root.children:
-                self.set_twists(twists, root=child, error_on_missing=error_on_missing)
+                self.set_params(params_dict, root=child, error_on_missing=error_on_missing)
 
     def set_features(self, features, root=None, error_on_missing=False):
         self._pox_stale = True
@@ -1484,19 +1636,20 @@ class KinematicTree(object):
             for child in root.children:
                 self.set_features(features, root=child, error_on_missing=error_on_missing)
 
-    def get_twists(self, root=None, twists=None):
+    def get_params(self, root=None, params_dict=None):
         if root is None:
             root = self._root
-        if twists is None:
-            twists = {}
+        if params_dict is None:
+            params_dict = {}
         try:
-            twists[root.name] = root.twist
+            params_dict[root.name] = root.twist
         except AttributeError:
+            # This is an immovable joint
             pass
         if hasattr(root, 'children'):
             for child in root.children:
-                self.get_twists(root=child, twists=twists)
-        return twists
+                self.get_params(root=child, params_dict=params_dict)
+        return params_dict
 
     def get_features(self, root=None, features=None):
         if root is None:
@@ -1585,7 +1738,7 @@ class KinematicTree(object):
         return KinematicTreeObjectiveFunction(self, feature_obs_dict_list, **args)
     
     def fit_params(self, feature_obs, configs=None, 
-            optimize={'configs':True, 'twists':True, 'features':True}, print_info=True):
+            optimize={'configs':True, 'params':True, 'features':True}, print_info=True):
         # TODO: only do this for [0,0,0,1] features
         # Set the feature positions to those seen at the zero configuration
         self.set_features(feature_obs[0])
@@ -1607,19 +1760,19 @@ class KinematicTree(object):
                 method='L-BFGS-B')
 
         # Normalize the twists
-        final_configs, final_twists, final_features = opt.unvectorize(result.x)
-        if final_twists is not None:
-            for twist in final_twists:
-                norm_constant = final_twists[twist].normalize()
+        final_configs, final_params, final_features = opt.unvectorize(result.x)
+        if final_params is not None:
+            for twist in final_params:
+                norm_constant = final_params[twist].normalize()
                 for config in final_configs:
                     config[twist] = config[twist] * norm_constant
-            self.set_twists(final_twists)
+            self.set_params(final_params)
 
         #Set the tree's features to the optimal values
         if final_features is not None:
             self.set_features(final_features)
 
-        return final_configs, final_twists, final_features
+        return final_configs, final_params, final_features
 
     def copy(self):
         return deepcopy(self)
@@ -1632,7 +1785,7 @@ class KinematicTreeParamVectorizer(object):
 
     def vectorize(self, configs=None, twists=None, features=None):
         # configs - list of dicts of floats
-        # twists - dict of Twist objects
+        # twists - dict of ParameterizedJoint objects
         # features - dict of GeometricPrimitive objects
         self._last_vectorized_sequence = []
         vector_list = []
@@ -1642,9 +1795,10 @@ class KinematicTreeParamVectorizer(object):
         if configs is not None:
             for i, config in enumerate(configs):
                 for joint_name in config:
-                    description_tuple = ('config', (i, joint_name), 'int', 1)
+                    vec_value = config[joint_name]
+                    description_tuple = ('config', (i, joint_name), 'array', len(vec_value))
                     self._last_vectorized_sequence.append(description_tuple)
-                    vector_list.append(config[joint_name])
+                    vector_list.extend(vec_value)
             self._vectorize['configs'] = True
         else:
             self._vectorize['configs'] = False
@@ -1654,7 +1808,9 @@ class KinematicTreeParamVectorizer(object):
             for joint_name in twists:
                 if twists[joint_name] is not None:
                     vec_value = twists[joint_name].vectorize()
-                    description_tuple = ('twist', joint_name, type(twists[joint_name]), len(vec_value))
+                    dict_description = twists[joint_name].to_dict()
+                    del dict_description['params']
+                    description_tuple = ('twist', joint_name, dict_description, len(vec_value))
                     self._last_vectorized_sequence.append(description_tuple)
                     vector_list.extend(vec_value)
             self._vectorize['twists'] = True
@@ -1700,15 +1856,17 @@ class KinematicTreeParamVectorizer(object):
             # Reconstruct the original data structures
             if desc_tuple[0] == 'config':
                 if self._vectorize['configs']:
-                    theta = float(vec_value[0])
+                    config = np.array(vec_value)
                     config_idx = desc_tuple[1][0]
                     name = desc_tuple[1][1]
                     while len(configs) < config_idx + 1:
                         configs.append({})
-                    configs[config_idx][prefix+name] = theta
+                    configs[config_idx][prefix+name] = config
             elif desc_tuple[0] == 'twist':
                 if self._vectorize['twists']:
-                    twist = desc_tuple[2](vectorized=vec_value)
+                    joint_type_dict = desc_tuple[2]
+                    joint_type_dict['params'] = vec_value
+                    twist = ParameterizedJoint.from_dict(joint_type_dict)
                     name = desc_tuple[1]
                     twists[prefix+name] = twist
             elif desc_tuple[0] == 'feature':
@@ -1727,14 +1885,13 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
         # Initialize the state vectorizer to output only config values
         self._state_vectorizer = KinematicTreeParamVectorizer()
-        tree_joints = self._tree.get_joints()
-        initial_config = {joint:0.0 for joint in tree_joints if tree_joints[joint].twist is not None}
-        self._state_vectorizer.vectorize(configs=[initial_config])
+        params = self._tree.get_params()
+        initial_config = {name: np.zeros(params[name].config_shape()) for name in params if params[name] is not None}
+        self._state_length = len(self._state_vectorizer.vectorize(configs=[initial_config]))
 
         # Initialize the measurement vectorizer to output only feature values
         self._meas_vectorizer = KinematicTreeParamVectorizer()
         self._meas_vectorizer.vectorize(features=self._tree.get_features())
-        self._state_length = len(initial_config)
         self._state_names = initial_config.keys()
 
     def measurement_model(self, state_vector):
@@ -1743,7 +1900,7 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
         Returned array is (sum(len(feature_i.vectorize())),).
         """
         # Shape array correctly
-        state_vector = state_vector.squeeze()
+        state_vector = np.atleast_1d(state_vector.squeeze())
         if state_vector.ndim < 2:
             state_vector = state_vector[:,None]
         output_arr = None
@@ -1754,7 +1911,6 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
             # Set the kinematic tree to the correct config, observe features, vectorize, and return
             self._tree.set_config(config_dict)
-            self._tree._compute_pox()
             feature_obs = self._tree.observe_features()
             output_obs = self._meas_vectorizer.vectorize(features=feature_obs)
 
@@ -1869,17 +2025,17 @@ class WristStateSpaceModel(StateSpaceModel, MocapWrist):
 
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
-            optimize={'configs':True, 'twists':True, 'features':True}):
+            optimize={'configs':True, 'params':True, 'features':True}):
         self._tree = kinematic_tree
         if optimize['features'] and optimize['features'] is not True:
             self._feature_obs = [{name:feature_obs[name] for name in optimize['features']} for feature_obs in feature_obs_dict_list]
         else:
             self._feature_obs = feature_obs_dict_list
         if config_dict_list is None:
-            twists = self._tree.get_twists()
+            params = self._tree.get_params()
 
             # Don't optimize the config of immovable joints
-            zero_config = {name: 0.0 for name in twists if twists[name] is not None}
+            zero_config = {name: np.zeros(params[name].config_shape()) for name in params if params[name] is not None}
             self._config_dict_list = [zero_config.copy() for config in feature_obs_dict_list]
         else:
             if len(config_dict_list) != len(feature_obs_dict_list):
@@ -1890,13 +2046,13 @@ class KinematicTreeObjectiveFunction(object):
 
     def get_current_param_vector(self):
         # Pull params from KinematicTree and pass to vectorize
-        if self._optimize['twists']:
-            twists = self._tree.get_twists()
-            if self._optimize['twists'] is not True:
-                # Select only the specified twists to optimize if a list of names is given
-                twists = {name:twists[name] for name in self._optimize['twists']}
+        if self._optimize['params']:
+            params = self._tree.get_params()
+            if self._optimize['params'] is not True:
+                # Select only the specified params to optimize if a list of names is given
+                params = {name:params[name] for name in self._optimize['params']}
         else:
-            twists = None
+            params = None
         if self._optimize['features']:
             features = self._tree.get_features()
             if self._optimize['features'] is not True:
@@ -1913,20 +2069,20 @@ class KinematicTreeObjectiveFunction(object):
             configs = None
 
         # Vectorize and return
-        return self._vectorizer.vectorize(configs, twists, features)
+        return self._vectorizer.vectorize(configs, params, features)
 
     def error(self, vectorized_params):
         # Unvectorize params
         # Use self.unvectorize() so the zero config is handled correctly
-        configs, twists, features = self.unvectorize(vectorized_params)
+        configs, params, features = self.unvectorize(vectorized_params)
         if configs is not None:
             self._config_dict_list = configs
 
-        # Set features and twists on tree
+        # Set features and params on tree
         if features is not None:
             self._tree.set_features(features)
-        if twists is not None:
-            self._tree.set_twists(twists)
+        if params is not None:
+            self._tree.set_params(params)
 
         # Compute error
         return self._tree.compute_sequence_error(self._config_dict_list, self._feature_obs)
@@ -1938,24 +2094,29 @@ class KinematicTreeObjectiveFunction(object):
         return configs, twists, features
 
 
-def generate_synthetic_observations(tree, num_obs=100):
-    # Get all the movable joints in the tree
-    movable_joint_names = [name for name in tree.get_twists() if name is not None]
+def generate_synthetic_observations(tree, num_obs=100, continuous_configs='False'):
+    # Get the state dimension of each movable joint in the tree
+    movable_joint_dims = {name:np.asarray(tree.get_config()[name]).shape for name in tree.get_params() if tree.get_params()[name] is not None}
 
     # Generate random combinations of joint angles and output to a list of dicts
     configs = []
-    configs.append({name: 0.0 for name in movable_joint_names})
-    for i in range(num_obs - 1):
-        config = {}
-        for name in movable_joint_names:
-            config[name] = random.uniform(-3.14, 3.14)
-        configs.append(config)
+    if continuous_configs:
+        FREQ_MIN_MAX = (0.01, 0.1)
+        # Randomly generate frequency values for each joint's motion
+        movable_joint_freqs = {name:nprand.uniform(*FREQ_MIN_MAX, size=movable_joint_dims[name]) for name in movable_joint_dims}
+
+        # Evaluate each joint's sine function at the current time value and append to config list
+        for i in range(num_obs):
+            configs.append({name:np.sin(movable_joint_freqs[name]*i) for name in movable_joint_dims})
+    else:
+        configs.append({name:np.zeros(movable_joint_dims[name]) for name in movable_joint_dims})
+        for i in range(num_obs - 1):
+            configs.append({name:((2*pi*nprand.random(movable_joint_dims[name]))-pi) for name in movable_joint_dims})
 
     # Observe features for each config and make a list of feature obs dicts
     feature_obs_dict_list = []
     for config in configs:
         tree.set_config(config)
-        tree._compute_pox()
         feature_obs_dict_list.append(tree.observe_features())
     return configs, feature_obs_dict_list
 
@@ -1972,48 +2133,41 @@ def differentiate(start, end, delta_time):
 
 
 def main():
+    # Construct the kinematic chain
     j0 = Joint('joint0')
     j1 = Joint('joint1')
     j2 = Joint('joint2')
 
-    j1.twist = Twist(omega=[0,0,1], nu=[1,1,0])
-    j2.twist = Twist(omega=[0,0,1], nu=[1,-1,0])
+    j1.twist = ThreeDofBallJoint(np.ones(3))
+    j2.twist = OneDofTwistJoint(np.array([1,0,0,0,0,0]))
 
-    ft1 = Feature('feat1', Point())
-    ft2 = Feature('feat2', Point())
-    trans1 = np.array([[ 0, 1, 0,-1],
-                       [-1, 0, 0, 3],
-                       [ 0, 0, 1, 0],
-                       [ 0, 0, 0, 1]])
-    trans2 = np.array([[ 1, 0, 0, 3],
-                       [ 0, 1, 0, 1],
-                       [ 0, 0, 1, 0],
-                       [ 0, 0, 0, 1]])
-    trans1 = Feature('A', Transform(homog_array=trans1))
-    trans2 = Feature('B', Transform(homog_array=trans2))
+    ft1 = Feature('feat1', Point(np.array([1,2,3,1])))
+    ft2 = Feature('feat2', Point(np.array([3,2,1,1])))
+    ft3 = Feature('feat3', Point(np.array([2,2,2,1])))
+    ft4 = Feature('feat4', Point(np.array([5,1,2,1])))
 
     j0.children.append(j1)
-    j0.children.append(j2)
     j1.children.append(ft1)
-    j2.children.append(ft2)
-    # j1.children.append(trans1)
-    # j2.children.append(trans2)
+    j1.children.append(ft2)
+    j1.children.append(j2)
+    j2.children.append(ft3)
+    j2.children.append(ft4)
 
+    # Test JSON saving and loading
     tree = KinematicTree(j0)
+    json_string_1 = tree.json()
+    tree.json(filename='kinmodel_test_1.json')
 
-    string = tree.json()
-    with open('base_kinmodel.json', 'w') as json_file:
-        json_file.write(string)
+    test_decode = KinematicTree(json_filename='kinmodel_test_1.json')
+    json_string_2 = test_decode.json()
+    assert json_string_1 == json_string_2, 'JSON saving/loading produces a different KinematicTree'
 
-    test_decode = json.loads(string, object_hook=obj_to_joint, encoding='utf-8')
-
-    tree.set_config({'joint1':0.0, 'joint2':pi/2})
-    # tree.compute_jacobian('A', 'B')
-
+    #Test parameter optimization
+    tree.set_config({'joint1':[0, 0, 0], 'joint2':[0]})
     configs, feature_obs = generate_synthetic_observations(tree, 20)
     final_configs, final_twists, final_features = tree.fit_params(feature_obs, configs=None, 
-            optimize={'configs':True, 'twists':True, 'features':True})
-    1/0
+            optimize={'configs':True, 'params':True, 'features':False})
+
 
 if __name__ == '__main__':
     main()

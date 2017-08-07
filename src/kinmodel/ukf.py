@@ -25,9 +25,9 @@ class UnscentedKalmanFilter(object):
         """
         self.meas_func = meas_func
         self.proc_func = proc_func
-        self.x = x0.squeeze()[:,None]
+        self.x = np.atleast_1d(x0.squeeze())[:,None]
         self.P = P0
-        state_dim = x0.shape[0]
+        state_dim = self.x.shape[0]
         meas_dim = meas_func(x0).shape[0]
         self.Q = np.identity(state_dim) * Q
         self.R = R
@@ -127,7 +127,7 @@ class UnscentedKalmanFilter(object):
 
 def generate_sigma_pts(mean, covariance, alpha_squared=1.0e-3):
     # Make mean (N,)
-    mean = mean.squeeze()
+    mean = np.atleast_1d(mean.squeeze())
 
     # Initialize (N,N) array to hold sigma pts and (N,) array of weights
     sigma_pts = np.zeros((mean.shape[0], (2 * mean.shape[0]) + 1))

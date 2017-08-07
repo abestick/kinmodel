@@ -61,6 +61,7 @@ class MocapTracker(object):
             recorded_results = None
         stream = mocap_source.get_stream()
         for i, (frame, timestamp) in enumerate(stream):
+            print(i)
             if self.exit:
                 break
             if mocap_transformer is not None:

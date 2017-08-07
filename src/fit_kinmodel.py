@@ -66,10 +66,10 @@ def main():
     # Run the optimization
     kin_tree.set_features(feature_obs[0])
     final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs,
-            optimize={'twists':True, 'features':False, 'configs':True})
+            optimize={'params':True, 'features':False, 'configs':True})
     print('Second optimization...')
     final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs, configs=final_configs,
-            optimize={'twists':True, 'features':True, 'configs':True})
+            optimize={'params':True, 'features':True, 'configs':True})
     kin_tree.json(args.kinmodel_json_optimized)
     
 if __name__ == '__main__':
