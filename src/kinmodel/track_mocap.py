@@ -837,22 +837,28 @@ def determine_joint_coordinate_transform(link_points, joint, zero_thresh=1e-15):
     z_axis = unit_vector(normal)
 
     if joint.twist is None:
-        joint = joint.children[0]
+        joint = next((child for child in joint.children if isinstance(child, kinmodel.Joint)), None)
 
-    joint_axis = joint.twist.omega()
-    axis_z = joint_axis.dot(z_axis) * z_axis
-    y_axis = unit_vector(joint_axis - axis_z)
+    rotation_matrix = np.eye(3)
 
-    assert abs(y_axis.dot(z_axis)) < zero_thresh, "Axes are not orthogonal!"
+    if joint is not None:
+        if isinstance(joint.twist, kinmodel.OneDofTwistJoint):
 
-    x_axis = np.cross(y_axis, z_axis)
+            joint_axis = joint.twist.twist().omega()
+            axis_z = joint_axis.dot(z_axis) * z_axis
+            y_axis = unit_vector(joint_axis - axis_z)
 
-    if x_axis.dot(origin) > 0:
-        z_axis *= -1
-        x_axis *= -1
+            assert abs(y_axis.dot(z_axis)) < zero_thresh, "Axes are not orthogonal!"
 
-    rotation_matrix = np.vstack((x_axis, y_axis, z_axis)).T
-    # origin_in_new_frame = rotation_matrix.dot(origin).reshape((-1, 1))
+            x_axis = np.cross(y_axis, z_axis)
+
+            if x_axis.dot(origin) > 0:
+                z_axis *= -1
+                x_axis *= -1
+
+            rotation_matrix = np.vstack((x_axis, y_axis, z_axis)).T
+            # origin_in_new_frame = rotation_matrix.dot(origin).reshape((-1, 1))
+
     homog_transform = np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))
 
     return homog_transform

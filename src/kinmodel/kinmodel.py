@@ -384,6 +384,12 @@ class ParameterizedJoint(object):
         del attrib_dict['joint_type']
         return types[new_type](**attrib_dict)
 
+    def twist_dict(self, name):
+        return {}
+
+    def xi_dict(self, name):
+        return {}
+
 
 class OneDofTwistJoint(ParameterizedJoint):
     def __init__(self, params=None):
@@ -400,8 +406,19 @@ class OneDofTwistJoint(ParameterizedJoint):
         self.params = np.squeeze(twist.xi()/norm_constant)
         return np.array((norm_constant,))
 
+    def twist(self):
+        return self._twists[0]
+
+    def twist_dict(self, name):
+        return {name: self.twist()}
+
+    def xi_dict(self, name):
+            return {name: self.twist().xi()}
+
 
 class ThreeDofBallJoint(ParameterizedJoint):
+    angle_names = ('alpha', 'beta', 'gamma')
+
     def __init__(self, params, joint_axes=[[1,0,0], [0,1,0], [0,0,1]]):
         # Columns of joint_axes specify the axes of rotation in the zero config
         self.joint_axes = joint_axes
@@ -415,6 +432,9 @@ class ThreeDofBallJoint(ParameterizedJoint):
 
     def normalize(self):
         return np.ones(3)
+
+    def twist_dict(self, name):
+        return {'%s_%s' % (name, element): twist for element, twist in zip(self.angle_names, self._twists)}
 
 
 class Transform(GeometricPrimitive):
@@ -1478,13 +1498,13 @@ class KinematicTree(object):
         incoming_twists = {}
         for i, joint_name in enumerate(incoming_joints):
             try:
-                incoming_twists[joint_name] = all_joints[joint_name]._dpox.xi()
+                incoming_twists.update(all_joints[joint_name].twist.xi_dict(joint_name))
             except AttributeError:
                 pass # Stationary joint - doesn't have a twist
         outgoing_twists = {}
         for i, joint_name in enumerate(outgoing_joints):
             try:
-                outgoing_twists[joint_name] = all_joints[joint_name]._dpox.xi()
+                outgoing_twists.update(all_joints[joint_name].twist.xi_dict(joint_name))
             except AttributeError:
                 pass #Stationary joint - doesn't have a twist
 
