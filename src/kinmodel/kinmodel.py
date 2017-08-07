@@ -332,8 +332,13 @@ class Transform(GeometricPrimitive):
     def p(self):
         return self._H[0:3,3]
 
-    def R(self):
-        return self._H[0:3,0:3]
+    def R(self, homog=False):
+        if homog:
+            H = self._H.copy()
+            H[:3, 3] = 0
+            return H
+        else:
+            return self._H[0:3,0:3]
 
     def pose(self, convention='euler'):
         pose = np.empty(6 + int(convention == 'quaternion'))
@@ -549,6 +554,12 @@ class Jacobian(object):
         else:
             raise NotImplementedError("dot is not yet implemented for %s." % type(other))
 
+    def in_place_dot(self, array, left=False):
+        if not left:
+            self._matrix = self._matrix.dot(array)
+        else:
+            self._matrix = array.dot(self._matrix)
+
     def __mul__(self, other):
         if isinstance(other, Jacobian):
             assert set(other._row_names) == set(self._column_names), "Right multiplicant must have the same rows as the " \
@@ -590,6 +601,34 @@ class Jacobian(object):
 
         else:
             raise NotImplementedError("Multiplication is not yet implemented for %s." % type(other))
+
+    def __add__(self, other):
+        if isinstance(other, np.ndarray):
+            new = self.copy()
+            new._matrix += other
+        else:
+            raise NotImplementedError("Addition is not yet implemented for %s." % type(other))
+
+    def __sub__(self, other):
+        if isinstance(other, np.ndarray):
+            new = self.copy()
+            new._matrix -= other
+        else:
+            raise NotImplementedError("Subtraction is not yet implemented for %s." % type(other))
+
+    def __iadd__(self, other):
+        if isinstance(other, np.ndarray):
+            self._matrix += other
+            return self
+        else:
+            raise NotImplementedError("Addition is not yet implemented for %s." % type(other))
+
+    def __isub__(self, other):
+        if isinstance(other, np.ndarray):
+            self._matrix -= other
+            return self
+        else:
+            raise NotImplementedError("Subtraction is not yet implemented for %s." % type(other))
 
     def row_names(self):
         return self._row_names
@@ -809,6 +848,9 @@ class Twist(GeometricPrimitive):
     def __add__(self, other):
         return Twist(xi=self._xi + other._xi)
 
+    def __sub__(self, other):
+        return Twist(xi=self._xi - other._xi)
+
 
 class Rotation(GeometricPrimitive):
     """ R = Rotation(...)  element of SO(3)
@@ -875,7 +917,7 @@ class Rotation(GeometricPrimitive):
     def __div__(self, other):
         if isinstance(other, float):
             new = self.copy()
-            new._H /= other
+            new._R /= other
             return new
 
         else:
