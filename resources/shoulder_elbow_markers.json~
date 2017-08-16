@@ -1,0 +1,205 @@
+{
+    "name": "base",
+    "twist": null,
+    "children": [
+        {
+            "name": "shoulder",
+            "twist": {
+                "joint_type": "ThreeDofBallJoint",
+                "params": [
+                    0.14265717964842534,
+                    0.2395485712284171,
+                    -0.11310758195101492
+                ],
+                "joint_axes": [
+                    [
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1
+                    ]
+                ]
+            },
+            "children": [
+                {
+                    "name": "elbow",
+                    "twist": {
+                        "joint_type": "OneDofTwistJoint",
+                        "params": [
+                            0.3347663469888081,
+                            0.12831910144235736,
+                            -0.9335232729443841,
+                            0.09139079055532738,
+                            0.05734485131593299,
+                            0.03603459105615242
+                        ]
+                    },
+                    "children": [
+                        {
+                            "name": "mocap_3",
+                            "primitive": [
+                                0.0,
+                                0.0,
+                                0.0,
+                                1.0
+                            ]
+                        },
+                        {
+                            "name": "mocap_4",
+                            "primitive": [
+                                0.0,
+                                0.0,
+                                0.0,
+                                1.0
+                            ]
+                        },
+                        {
+                            "name": "mocap_5",
+                            "primitive": [
+                                0.0,
+                                0.0,
+                                0.0,
+                                1.0
+                            ]
+                        },
+                        {
+                            "name": "mocap_7",
+                            "primitive": [
+                                0.0,
+                                0.0,
+                                0.0,
+                                1.0
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "mocap_12",
+                    "primitive": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ]
+                },
+                {
+                    "name": "mocap_0",
+                    "primitive": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ]
+                },
+                {
+                    "name": "mocap_1",
+                    "primitive": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ]
+                },
+                {
+                    "name": "mocap_2",
+                    "primitive": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ]
+                },
+                {
+                    "name": "mocap_6",
+                    "primitive": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "mocap_1",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        },
+        {
+            "name": "mocap_3",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        },
+        {
+            "name": "mocap_5",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        },
+        {
+            "name": "mocap_8",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        },
+        {
+            "name": "mocap_10",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        },
+        {
+            "name": "mocap_11",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        },
+        {
+            "name": "mocap_12",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        },
+        {
+            "name": "mocap_13",
+            "primitive": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        }
+    ]
+}

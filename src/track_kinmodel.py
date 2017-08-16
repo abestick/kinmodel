@@ -10,6 +10,7 @@ from kinmodel.track_mocap import KinematicTreeTracker
 
 FRAMERATE = 50
 
+
 def main():
     rospy.init_node('kin_tree_tracker')
     plt.ion()
@@ -23,7 +24,7 @@ def main():
     # ukf_mocap = load_mocap.MocapArray(calib_data['full_sequence'][:,:,:], FRAMERATE)
 
     # Load the mocap stream
-    ukf_mocap = load_mocap.PointCloudStream('/mocap_point_cloud')
+    ukf_mocap = load_mocap.PointCloudMocapSource('/mocap_point_cloud').get_stream()
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
     # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 

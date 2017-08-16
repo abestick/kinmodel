@@ -61,6 +61,7 @@ class MocapTracker(object):
             recorded_results = None
         stream = mocap_source.get_stream()
         for i, (frame, timestamp) in enumerate(stream):
+            print(i)
             if self.exit:
                 break
             if mocap_transformer is not None:
@@ -562,19 +563,27 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         self._kin_tree._pox_stale = True
         self._kin_tree._dpox_stale = True
         joints = self._kin_tree.get_joints()
+        link_points = np.empty((0, 3))
+        link_indices = []
+        for point in joints[joint_name].children:
+            try:
+                link_points = np.vstack((link_points, point.primitive.q().squeeze()))
+                link_indices.append(int(point.name.split('_')[-1]))
+                # trans = trans + point.primitive.q().squeeze()
+                # num_points += 1
+            except AttributeError:
+                pass  # This feature isn't a Point
+
         if pose is None:
             # No pose specified, set to mean position of all other Point children of this joint
-            trans = np.zeros((3,))
-            num_points = 0
-            for point in joints[joint_name].children:
-                try:
-                    trans = trans + point.primitive.q().squeeze()
-                    num_points += 1
-                except AttributeError:
-                    pass  # This feature isn't a Point
-            trans = trans / num_points
-            homog = np.identity(4)
-            homog[0:3, 3] = trans
+            # trans = np.zeros((3,))
+            # num_points = 0
+
+            # trans = trans / num_points
+            # homog = np.identity(4)
+            # homog[0:3, 3] = trans
+
+            homog = determine_joint_coordinate_transform(link_points, joints[joint_name])
             pose = kinmodel.Transform(homog_array=homog)
 
         new_feature = kinmodel.Feature(frame_name, pose)
@@ -582,6 +591,8 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         self._attached_frame_names.append(frame_name)
         if tf_pub:
             self._tf_pub_frame_names.append(frame_name)
+
+        return link_indices, (pose.inv().homog().dot(np.vstack((link_points.T, np.ones(link_points.shape[0])))))[:3, :].T
 
     def attach_tf_frame(self, joint_name, tf_frame_name):
         # Attach reference frame to specified joint
@@ -728,11 +739,11 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
 
     def get_observation_func(self):
         """Get a function which takes a config dict for the KinematicTree being tracked
-		and returns a dict of frame observations at that config.
+        and returns a dict of frame observations at that config.
 
-		Note that the returned function is NOT thread safe at the moment. Calling
-		obs_func while running this tracker in another thread may cause weird, intermittent bugs.
-		"""
+        Note that the returned function is NOT thread safe at the moment. Calling
+        obs_func while running this tracker in another thread may cause weird, intermittent bugs.
+        """
         def obs_func(state_dict):
             """Observation function which returns the frame observations at the specifed state.
 
@@ -786,7 +797,7 @@ def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-
     Defines the hand frame as the origin at the mean of the hand points, the z axis normal to the plane they form and 
     the x axis the vector to the arm at zero conditions projected onto this plane. It then transforms the hand points
     into this frame and returns the transform and the transformed hand points
-    :param hand_points: 
+    :param hand_points:
     :param arm_points: 
     :param zero_thresh: 
     :return: 
@@ -810,6 +821,47 @@ def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-
         desired_hand_points[i, :] = homog_transform.dot(np.append(marker, 1))
 
     return homog_transform, desired_hand_points[:, :3]
+
+
+def determine_joint_coordinate_transform(link_points, joint, zero_thresh=1e-15):
+    """
+    Defines the hand frame as the origin at the mean of the hand points, the z axis normal to the plane they form and
+    the x axis the vector to the arm at zero conditions projected onto this plane. It then transforms the hand points
+    into this frame and returns the transform and the transformed hand points
+    :param link_points:
+    :param joint_twist:
+    :param zero_thresh:
+    :return:
+    """
+    origin, normal = best_fitting_plane(link_points)
+    z_axis = unit_vector(normal)
+
+    if joint.twist is None:
+        joint = next((child for child in joint.children if isinstance(child, kinmodel.Joint)), None)
+
+    rotation_matrix = np.eye(3)
+
+    if joint is not None:
+        if isinstance(joint.twist, kinmodel.OneDofTwistJoint):
+
+            joint_axis = joint.twist.twist().omega()
+            axis_z = joint_axis.dot(z_axis) * z_axis
+            y_axis = unit_vector(joint_axis - axis_z)
+
+            assert abs(y_axis.dot(z_axis)) < zero_thresh, "Axes are not orthogonal!"
+
+            x_axis = np.cross(y_axis, z_axis)
+
+            if x_axis.dot(origin) > 0:
+                z_axis *= -1
+                x_axis *= -1
+
+            rotation_matrix = np.vstack((x_axis, y_axis, z_axis)).T
+            # origin_in_new_frame = rotation_matrix.dot(origin).reshape((-1, 1))
+
+    homog_transform = np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))
+
+    return homog_transform
 
 
 def pca(data, correlation = False, sort = True):
