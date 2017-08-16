@@ -24,7 +24,7 @@ def main():
     # ukf_mocap = load_mocap.MocapArray(calib_data['full_sequence'][:,:,:], FRAMERATE)
 
     # Load the mocap stream
-    ukf_mocap = load_mocap.PointCloudMocapSource('/mocap_point_cloud').get_stream()
+    ukf_mocap = load_mocap.PointCloudMocapSource('/mocap_point_cloud')
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
     # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 

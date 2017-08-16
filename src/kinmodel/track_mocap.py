@@ -298,8 +298,14 @@ class MocapUkfTracker(MocapTracker):
 
         # Publish joint states
         if self._estimation_pub is not None:
-            msg = sensor_msgs.JointState(position=result['mean'].squeeze(),
-                                         header=Header(stamp=rospy.Time.now()))
+            names = []
+            positions = []
+            for joint_name in result:
+                for i, joint_position in enumerate(result[joint_name]):
+                    names.append(joint_name + '_' + str(i))
+                    positions.append(np.rad2deg(joint_position))
+            msg = sensor_msgs.JointState(header=Header(stamp=rospy.Time.now()),
+                    position=positions, name=names)
             self._estimation_pub.publish(msg)
 
     def _initialize_filter(self, initial_frame, reps=50):
