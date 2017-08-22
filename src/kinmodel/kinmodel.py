@@ -1289,153 +1289,6 @@ def obj_to_joint(orig_obj):
         return orig_obj
 
 
-class IKSolver(object):
-    """Contains the kinematic tree, cost functions, and constraints associated
-    with a given inverse kinematics problem.
-
-    Methods allow the IK problem to be solved for different initial
-    configurations
-    """
-    def __init__(self, tree, constraints=[], costs=[]):
-        self.tree = tree
-        self.constraints = constraints
-        self.costs = costs
-        self.objective, self.jacobian = self._set_cost_functions()
-
-    #Use a function factory to create the objective and Jacobian functions
-    def _set_cost_functions(self, const_weight=1.0):
-        #Define the objective function
-        def objective(config):
-            const_sum = const_weight * sum([const.get_cost(config) for const in self.constraints])
-            cost_sum = sum([cost.get_cost(config) for cost in self.costs])
-            return const_sum + cost_sum
-
-        #Define the Jacobian of the objective function
-        def jacobian(config):
-            const_sum = const_weight * sum([const.get_jacobian(config) for const in self.constraints])
-            cost_sum = sum([cost.get_jacobian(config) for cost in self.costs])
-            return const_sum + cost_sum
-
-        return objective, jacobian
-
-    def solve_ik(self, init_config, weight_consts=True):
-        MAX_CONST_WT = 1.0e6
-        NUM_ITER = 10
-        DEBUG = True
-        JAC_TOL = 1e-8
-
-        if weight_consts:
-            #Generate the constraint weights for each iteration
-            weights = np.logspace(0, log10(MAX_CONST_WT), num=NUM_ITER)
-
-            #Run the optimization
-            result = None
-            for weight in weights:
-                self.objective, self.jacobian = self._set_cost_functions(weight)
-                if result is None:
-                    result = scipy.optimize.minimize(self.objective, init_config, method='BFGS',
-                              jac=self.jacobian, options={'gtol':JAC_TOL})
-                    # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
-                    #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
-                else:
-                    result = scipy.optimize.minimize(self.objective, result.x, method='BFGS', 
-                              jac=self.jacobian, options={'gtol':JAC_TOL})
-                    # result = opt.fmin_bfgs(self.objective, result.x, method='BFGS', 
-                    #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
-
-                #Stop iterating if the optimization failed to converge
-                if not result.success:
-                    break
-
-        #If we're not weighting the constraint costs, just run once
-        else:
-            self.objective, self.jacobian = self._set_cost_functions()
-            result = scipy.optimize.minimize(self.objective, init_config, method='BFGS', 
-                              jac=self.jacobian, options={'gtol':JAC_TOL})
-            # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
-            #                   fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
-        return result
-
-
-class KinematicCost(object):
-    def __init__(self, cost_func, jac_func):
-        self.cost_func = cost_func 
-        self.jac_func = jac_func
-
-    def get_cost(self, config):
-        #Takes a (N,) config and returns a scalar cost
-        return self.cost_func(config)
-
-    def get_jacobian(self, config):
-        #Takes a (N,) config and returns a (N,) gradient
-        return self.jac_func(config)
-
-
-class KinematicConstraint(KinematicCost):
-    def __init__(self, tree, constraint_type, frame, value):
-        #TODO: add orientation constraints
-        KinematicCost.__init__(self, self._constraint_cost, 
-                               self._constraint_jacobian)
-        self.tree = tree #The KinematicTree referenced by this constraint
-        self.type = constraint_type #Constraint type
-        self.frame = frame #Name of the constrained end effector frame
-        self.value = value #Desired value of the constrained frame (type depends on self.type)
-        #self.type=='position' -> self.value==Point, self.type=='orientation' -> self.value==Rotation
-        #Example types: 'position', 'orientation'
-
-    def _constraint_cost(self, config):
-        #Get the current value of the end effector transform
-        cur_trans = self.tree.get_transform(config, self.frame)
-
-        #Conmpute the value of the constraint depending on its type
-        if self.type is 'position':
-            diff = self.value.diff(cur_trans.position())
-            return diff.norm()**2
-        elif self.type is 'orientation':
-            raise NotImplementedError('Orientation constraints are not implemented')
-        else:
-            raise TypeError('Not a valid constraint type')
-
-    def _constraint_jacobian(self, config):
-        cur_trans = self.tree.get_transform(config, self.frame)
-        cur_jac = self.tree.get_jacobian(config, self.frame)
-
-        #Compute the velocity of the origin of the end effector frame,
-        #in spatial frame coordinates, for each joint in the manipulator
-        jac_hat = se3.hat(cur_jac) #4 x 4 x N ndarray
-        end_vel = np.zeros(jac_hat.shape)
-        for i in range(jac_hat.shape[2]):
-            end_vel[:,:,i] = jac_hat[:,:,i].dot(cur_trans.homog())
-        end_vel = se3.unhat(end_vel)
-
-        if self.type is 'position':
-            cost_jac = np.array(config)
-            cost_jac = 2 * cur_trans.position().x() - 2 * self.value.x()
-            return cost_jac.T.squeeze().dot(end_vel[3:,:])
-
-
-class QuadraticDisplacementCost(KinematicCost):
-    """Kinematic cost which penalizes movement away from a neutral pose.
-
-    The quadratic displacement cost is equal to the squared configuration space 
-    distance between the current kinematic configuration and a 
-    specified neutral configuration.
-
-    Args:
-    neutral_pos - (N,) ndarray: The neutral pose of the manipulator in c-space
-    """
-
-    def __init__(self, neutral_pos):
-        KinematicCost.__init__(self, self._cost, self._jacobian)
-        self.neutral_pos = neutral_pos
-
-    def _cost(self, config):
-        return la.norm(config - self.neutral_pos)**2
-
-    def _jacobian(self, config):
-        return 2 * config - 2 * self.neutral_pos
-
-
 class KinematicTree(object):
     # Specify only one of the three sources to load the tree from
     def __init__(self, root=None, json_string=None, json_filename=None):
@@ -1706,7 +1559,6 @@ class KinematicTree(object):
 
         # Assuming feature_obs_dict maps feature names to geometric primitive objects, compute the
         # error between each feature and its actual value
-        # TODO: Add an .error(other) method to primitives
         feature_obs = self.observe_features()
         sum_squared_errors = 0
 
@@ -1954,8 +1806,9 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
 
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
-            optimize={'configs':True, 'params':True, 'features':True}):
+            optimize={'configs':True, 'params':True, 'features':True}, fix_zero_config=True):
         self._tree = kinematic_tree
+        self._fix_zero_config = fix_zero_config
         if optimize['features'] and optimize['features'] is not True:
             self._feature_obs = [{name:feature_obs[name] for name in optimize['features']} for feature_obs in feature_obs_dict_list]
         else:
@@ -1990,7 +1843,11 @@ class KinematicTreeObjectiveFunction(object):
         else:
             features = None
         if self._optimize['configs']:
-            configs = self._config_dict_list[1:]
+            # Decide whether to fix configs[0] or include it in the param vector
+            if self._fix_zero_config:
+                configs = self._config_dict_list[1:]
+            else:
+                configs = self._config_dict_list
             if self._optimize['configs'] is not True:
                 # Select only the specified configs to optimize if a list of names is given
                 configs = [{name:config_dict[name] for name in self._optimize['configs']} for config_dict in configs]
@@ -2018,7 +1875,8 @@ class KinematicTreeObjectiveFunction(object):
 
     def unvectorize(self, vectorized_params):
         configs, twists, features = self._vectorizer.unvectorize(vectorized_params)
-        if configs is not None:
+        # Insert fixed zero config as configs[0] if fix_zero_config==True
+        if configs is not None and self._fix_zero_config:
             configs.insert(0, self._config_dict_list[0])
         return configs, twists, features
 
@@ -2096,6 +1954,7 @@ def main():
     configs, feature_obs = generate_synthetic_observations(tree, 20)
     final_configs, final_twists, final_features = tree.fit_params(feature_obs, configs=None, 
             optimize={'configs':True, 'params':True, 'features':False})
+    1/0
 
 
 if __name__ == '__main__':
