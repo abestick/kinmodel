@@ -1655,6 +1655,27 @@ class KinematicTreeParamVectorizer(object):
         self._last_vectorized_sequence = None
         self._vectorize = {'configs':False, 'twists':False, 'features':False}
 
+    def get_vector_indices(self):
+        config_entries = []
+        param_entries = {}
+        feature_entries = {}
+        length_sum = 0
+
+        for desc_tuple in self._last_vectorized_sequence:
+            item_indices = (length_sum, length_sum + desc_tuple[3])
+            if desc_tuple[0] == 'config':
+                while len(config_entries) <= desc_tuple[1][0]:
+                    config_entries.append({})
+                config_entries[desc_tuple[1][0]][desc_tuple[1][1]] = item_indices
+            elif desc_tuple[0] == 'twist':
+                param_entries[desc_tuple[1]] = item_indices
+            elif desc_tuple[0] == 'feature':
+                feature_entries[desc_tuple[1]] = item_indices
+            else:
+                raise RuntimeError('Unexpected entry type: ' + desc_tuple[0])
+            length_sum += desc_tuple[3]
+        return config_entries, param_entries, feature_entries
+
     def vectorize(self, configs=None, twists=None, features=None):
         # configs - list of dicts of floats
         # twists - dict of ParameterizedJoint objects
@@ -1825,6 +1846,9 @@ class KinematicTreeObjectiveFunction(object):
             self._config_dict_list = config_dict_list
         self._vectorizer = KinematicTreeParamVectorizer()
         self._optimize = optimize
+
+    def get_vector_indices(self):
+        return self._vectorizer.get_vector_indices()
 
     def get_current_param_vector(self):
         # Pull params from KinematicTree and pass to vectorize

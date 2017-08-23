@@ -2,7 +2,7 @@
 import numpy as np
 import scipy.optimize
 import se3
-from math import pi, log10, sqrt
+from math import pi
 import kinmodel
 
 class IKSolver(object):
@@ -15,7 +15,8 @@ class IKSolver(object):
     def __init__(self, tree):
         self.tree = tree
 
-    def solve_ik(self, goal_feat_dict, init_config_dict=None):
+    def solve_ik(self, goal_feat_dict, init_config_dict=None,
+            fixed_joint=None, fixed_joint_val=0.0):
         JAC_TOL = 1e-8
         SOLUTION_TOL = 1e-3
 
@@ -23,23 +24,55 @@ class IKSolver(object):
             init_config_dict = [init_config_dict]
 
         #Define objective function with the one feature we'd like to use for our IK goal
-        obj_func = kinmodel.KinematicTreeObjectiveFunction(self.tree, [goal_feat_dict],
+        tree_obj_func = kinmodel.KinematicTreeObjectiveFunction(self.tree, [goal_feat_dict],
                 init_config_dict, optimize={'configs':True, 'params':False, 'features':False},
                 fix_zero_config=False)
 
         #Select initial config
-        init_config_vec = obj_func.get_current_param_vector()
-        print(init_config_vec)
+        if fixed_joint is not None:
+            print(fixed_joint_val)
+            init_config_vec = tree_obj_func.get_current_param_vector()
+            fixed_idx = tree_obj_func.get_vector_indices()[0][0][fixed_joint[0]][0] + fixed_joint[1]
+            init_config_vec = np.delete(init_config_vec, fixed_idx)
+            obj_func = lambda x: tree_obj_func.error(np.insert(x, fixed_idx, fixed_joint_val))
+        else:
+            init_config_vec = tree_obj_func.get_current_param_vector()
+            obj_func = tree_obj_func.error
+
 
         #Run optimization
-        result = scipy.optimize.minimize(obj_func.error, init_config_vec, method='BFGS', 
-                options={'gtol':JAC_TOL, 'debug':True})
+        result = scipy.optimize.minimize(obj_func, init_config_vec, method='L-BFGS-B', 
+                options={'gtol':JAC_TOL})
 
         #Decide whether this is a solution and return as a config dict if so
-        if obj_func.error(result.x) <= SOLUTION_TOL:
-            return obj_func.unvectorize(result.x)[0][0], result
+        if obj_func(result.x) <= SOLUTION_TOL:
+            if fixed_joint is not None:
+                full_result = np.insert(result.x, fixed_idx, fixed_joint_val)
+            else:
+                full_result = result.x
+            return tree_obj_func.unvectorize(full_result)[0][0], result
         else:
             return None
+
+    def list_ik_sols(self, goal_feat_dict, init_config_dict=None, fixed_joint=None,
+            fixed_joint_step_rad=0.1):
+        # Generate an array of free joint displacements
+        fixed_joint_disps = np.arange(0.0, pi*2, fixed_joint_step_rad)
+
+        # Iterate over each free joint value
+        solutions = []
+        last_valid_solution = None
+        for fixed_joint_val in fixed_joint_disps:
+            result = self.solve_ik(goal_feat_dict, init_config_dict=last_valid_solution,
+                fixed_joint=fixed_joint, fixed_joint_val=fixed_joint_val)
+
+            # If solution found, add to list
+            if result is not None:
+                solutions.append(result[0])
+                last_valid_solution = result[0]
+
+        # Return list of solutions
+        return solutions
 
 # class KinematicCost(object):
 #     def __init__(self, cost_func, jac_func):
@@ -162,7 +195,8 @@ def main():
 
     goal_ft = Feature('feat4', Point(np.array([10,1,2,1])))
     tree.set_config({'joint1':[0, 0, 0], 'joint2':[0]})
-    test = solver.solve_ik({'feat4':goal_ft.primitive})
+    # test = solver.solve_ik(goal, fixed_joint=('joint1', 1), fixed_joint_val=config['joint1'][1])#{'feat4':goal_ft.primitive})
+    test = solver.list_ik_sols(goal, fixed_joint=('joint1', 1), fixed_joint_step_rad=0.1)
     1/0
 
 if __name__ == '__main__':
