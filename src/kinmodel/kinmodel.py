@@ -1289,153 +1289,6 @@ def obj_to_joint(orig_obj):
         return orig_obj
 
 
-class IKSolver(object):
-    """Contains the kinematic tree, cost functions, and constraints associated
-    with a given inverse kinematics problem.
-
-    Methods allow the IK problem to be solved for different initial
-    configurations
-    """
-    def __init__(self, tree, constraints=[], costs=[]):
-        self.tree = tree
-        self.constraints = constraints
-        self.costs = costs
-        self.objective, self.jacobian = self._set_cost_functions()
-
-    #Use a function factory to create the objective and Jacobian functions
-    def _set_cost_functions(self, const_weight=1.0):
-        #Define the objective function
-        def objective(config):
-            const_sum = const_weight * sum([const.get_cost(config) for const in self.constraints])
-            cost_sum = sum([cost.get_cost(config) for cost in self.costs])
-            return const_sum + cost_sum
-
-        #Define the Jacobian of the objective function
-        def jacobian(config):
-            const_sum = const_weight * sum([const.get_jacobian(config) for const in self.constraints])
-            cost_sum = sum([cost.get_jacobian(config) for cost in self.costs])
-            return const_sum + cost_sum
-
-        return objective, jacobian
-
-    def solve_ik(self, init_config, weight_consts=True):
-        MAX_CONST_WT = 1.0e6
-        NUM_ITER = 10
-        DEBUG = True
-        JAC_TOL = 1e-8
-
-        if weight_consts:
-            #Generate the constraint weights for each iteration
-            weights = np.logspace(0, log10(MAX_CONST_WT), num=NUM_ITER)
-
-            #Run the optimization
-            result = None
-            for weight in weights:
-                self.objective, self.jacobian = self._set_cost_functions(weight)
-                if result is None:
-                    result = scipy.optimize.minimize(self.objective, init_config, method='BFGS',
-                              jac=self.jacobian, options={'gtol':JAC_TOL})
-                    # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
-                    #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
-                else:
-                    result = scipy.optimize.minimize(self.objective, result.x, method='BFGS', 
-                              jac=self.jacobian, options={'gtol':JAC_TOL})
-                    # result = opt.fmin_bfgs(self.objective, result.x, method='BFGS', 
-                    #           fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
-
-                #Stop iterating if the optimization failed to converge
-                if not result.success:
-                    break
-
-        #If we're not weighting the constraint costs, just run once
-        else:
-            self.objective, self.jacobian = self._set_cost_functions()
-            result = scipy.optimize.minimize(self.objective, init_config, method='BFGS', 
-                              jac=self.jacobian, options={'gtol':JAC_TOL})
-            # result = opt.fmin_bfgs(self.objective, init_config, method='BFGS', 
-            #                   fprime=self.jacobian, disp=DEBUG, gtol=JAC_TOL)
-        return result
-
-
-class KinematicCost(object):
-    def __init__(self, cost_func, jac_func):
-        self.cost_func = cost_func 
-        self.jac_func = jac_func
-
-    def get_cost(self, config):
-        #Takes a (N,) config and returns a scalar cost
-        return self.cost_func(config)
-
-    def get_jacobian(self, config):
-        #Takes a (N,) config and returns a (N,) gradient
-        return self.jac_func(config)
-
-
-class KinematicConstraint(KinematicCost):
-    def __init__(self, tree, constraint_type, frame, value):
-        #TODO: add orientation constraints
-        KinematicCost.__init__(self, self._constraint_cost, 
-                               self._constraint_jacobian)
-        self.tree = tree #The KinematicTree referenced by this constraint
-        self.type = constraint_type #Constraint type
-        self.frame = frame #Name of the constrained end effector frame
-        self.value = value #Desired value of the constrained frame (type depends on self.type)
-        #self.type=='position' -> self.value==Point, self.type=='orientation' -> self.value==Rotation
-        #Example types: 'position', 'orientation'
-
-    def _constraint_cost(self, config):
-        #Get the current value of the end effector transform
-        cur_trans = self.tree.get_transform(config, self.frame)
-
-        #Conmpute the value of the constraint depending on its type
-        if self.type is 'position':
-            diff = self.value.diff(cur_trans.position())
-            return diff.norm()**2
-        elif self.type is 'orientation':
-            raise NotImplementedError('Orientation constraints are not implemented')
-        else:
-            raise TypeError('Not a valid constraint type')
-
-    def _constraint_jacobian(self, config):
-        cur_trans = self.tree.get_transform(config, self.frame)
-        cur_jac = self.tree.get_jacobian(config, self.frame)
-
-        #Compute the velocity of the origin of the end effector frame,
-        #in spatial frame coordinates, for each joint in the manipulator
-        jac_hat = se3.hat(cur_jac) #4 x 4 x N ndarray
-        end_vel = np.zeros(jac_hat.shape)
-        for i in range(jac_hat.shape[2]):
-            end_vel[:,:,i] = jac_hat[:,:,i].dot(cur_trans.homog())
-        end_vel = se3.unhat(end_vel)
-
-        if self.type is 'position':
-            cost_jac = np.array(config)
-            cost_jac = 2 * cur_trans.position().x() - 2 * self.value.x()
-            return cost_jac.T.squeeze().dot(end_vel[3:,:])
-
-
-class QuadraticDisplacementCost(KinematicCost):
-    """Kinematic cost which penalizes movement away from a neutral pose.
-
-    The quadratic displacement cost is equal to the squared configuration space 
-    distance between the current kinematic configuration and a 
-    specified neutral configuration.
-
-    Args:
-    neutral_pos - (N,) ndarray: The neutral pose of the manipulator in c-space
-    """
-
-    def __init__(self, neutral_pos):
-        KinematicCost.__init__(self, self._cost, self._jacobian)
-        self.neutral_pos = neutral_pos
-
-    def _cost(self, config):
-        return la.norm(config - self.neutral_pos)**2
-
-    def _jacobian(self, config):
-        return 2 * config - 2 * self.neutral_pos
-
-
 class KinematicTree(object):
     # Specify only one of the three sources to load the tree from
     def __init__(self, root=None, json_string=None, json_filename=None):
@@ -1706,7 +1559,6 @@ class KinematicTree(object):
 
         # Assuming feature_obs_dict maps feature names to geometric primitive objects, compute the
         # error between each feature and its actual value
-        # TODO: Add an .error(other) method to primitives
         feature_obs = self.observe_features()
         sum_squared_errors = 0
 
@@ -1802,6 +1654,27 @@ class KinematicTreeParamVectorizer(object):
     def __init__(self):
         self._last_vectorized_sequence = None
         self._vectorize = {'configs':False, 'twists':False, 'features':False}
+
+    def get_vector_indices(self):
+        config_entries = []
+        param_entries = {}
+        feature_entries = {}
+        length_sum = 0
+
+        for desc_tuple in self._last_vectorized_sequence:
+            item_indices = (length_sum, length_sum + desc_tuple[3])
+            if desc_tuple[0] == 'config':
+                while len(config_entries) <= desc_tuple[1][0]:
+                    config_entries.append({})
+                config_entries[desc_tuple[1][0]][desc_tuple[1][1]] = item_indices
+            elif desc_tuple[0] == 'twist':
+                param_entries[desc_tuple[1]] = item_indices
+            elif desc_tuple[0] == 'feature':
+                feature_entries[desc_tuple[1]] = item_indices
+            else:
+                raise RuntimeError('Unexpected entry type: ' + desc_tuple[0])
+            length_sum += desc_tuple[3]
+        return config_entries, param_entries, feature_entries
 
     def vectorize(self, configs=None, twists=None, features=None):
         # configs - list of dicts of floats
@@ -1952,101 +1825,11 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
         return self._state_vectorizer.unvectorize(state_vector, prefix)[0][0]
 
 
-class WristStateSpaceModel2(StateSpaceModel, MocapWrist):
-    """
-    Currently unused. Describes the system whereby mocap points are measurements and the transformation between hand
-    frame and arm frame are the states. This is not very elegant since we can compute this transformation directly but
-    may be useful later if we eventually model the wrist
-    """
-    def __init__(self, reference_features):
-
-        assert all(feature in reference_features for feature in self.names), \
-            "reference_frames must contain all these keys %s" % self.names
-
-        self.reference_features = reference_features
-
-        # Initialize the state vectorizer to output only config values
-        # We extend our state vector to include the translation we don't care about but need for predicting measurements
-        translation_configs = ['x', 'y', 'z']
-        self._state_vectorizer = KinematicTreeParamVectorizer()
-        initial_config = {config: 0.0 for config in self.configs + translation_configs}
-        self._state_vectorizer.vectorize([initial_config])
-
-        # Initialize the measurement vectorizer to output only feature values
-        self._meas_vectorizer = KinematicTreeParamVectorizer()
-        initial_features = {feature: Point() for feature in self.reference_features}
-        self._meas_vectorizer.vectorize(features=initial_features)
-        self._state_length = len(initial_config)
-
-    def _state_vector_to_transform(self, state_vector):
-        """
-        'Unflattens' the the state vector back into the homogenous transform it represents
-        :param state_vector: (6,) numpy array
-        :return: (4, 4) numpy array
-        """
-        configs = self._state_vectorizer.unvectorize(state_vector)[0]
-        homog = np.zeros((4,4))
-        homog[4, 4] = 1
-        homog[:3, :3] = euler_matrix(configs['roll'], configs['pitch'], configs['yaw'])
-        homog[:3, 3] = np.array([configs['x'], configs['y'], configs['z']])
-        return Transform(homog)
-
-    def measurement_model(self, state_vector):
-        """
-        Transforms all the points by the transform represented in the state vector
-        """
-        transform = self._configs_to_transform(state_vector)
-        meas_features = {feature: transform*self.reference_features[feature] for feature in self.names}
-        return self._meas_vectorizer.vectorize(meas_features)
-
-    def process_model(self, state_vector):
-        """
-        Identity process
-        """
-        return state_vector
-
-    def vectorize_measurement(self, feature_obs):
-        self._meas_vectorizer.vectorize(feature_obs)
-
-
-class WristStateSpaceModel(StateSpaceModel, MocapWrist):
-    """
-    Uses the euler angles describing the rotation about the wrist as both the states and the measurement with identity
-    process and measurement models.
-    """
-    def __init__(self):
-
-        # Initialize the state vectorizer to output only config values
-        # We extend our state vector to include the translation we don't care about but need for predicting measurements
-        self._state_vectorizer = KinematicTreeParamVectorizer()
-        initial_config = {config: 0.0 for config in self.configs}
-        self._state_vectorizer.vectorize(configs=[initial_config])
-
-        # Initialize the measurement vectorizer to output only config values
-        self._meas_vectorizer = KinematicTreeParamVectorizer()
-        self._meas_vectorizer.vectorize(configs=[initial_config])
-
-        self._state_length = len(initial_config)
-
-    def measurement_model(self, state_vector):
-        """Identity"""
-        return state_vector
-
-    def process_model(self, state_vector):
-        """Identity"""
-        return state_vector
-
-    def vectorize_measurement(self, configs_obs):
-        return self._meas_vectorizer.vectorize(configs=[configs_obs])
-
-    def unvectorize_estimation(self, state_vector, prefix=''):
-        return self._state_vectorizer.unvectorize(state_vector, prefix)[0][0]
-
-
 class KinematicTreeObjectiveFunction(object):
     def __init__(self, kinematic_tree, feature_obs_dict_list, config_dict_list=None,
-            optimize={'configs':True, 'params':True, 'features':True}):
+            optimize={'configs':True, 'params':True, 'features':True}, fix_zero_config=True):
         self._tree = kinematic_tree
+        self._fix_zero_config = fix_zero_config
         if optimize['features'] and optimize['features'] is not True:
             self._feature_obs = [{name:feature_obs[name] for name in optimize['features']} for feature_obs in feature_obs_dict_list]
         else:
@@ -2063,6 +1846,9 @@ class KinematicTreeObjectiveFunction(object):
             self._config_dict_list = config_dict_list
         self._vectorizer = KinematicTreeParamVectorizer()
         self._optimize = optimize
+
+    def get_vector_indices(self):
+        return self._vectorizer.get_vector_indices()
 
     def get_current_param_vector(self):
         # Pull params from KinematicTree and pass to vectorize
@@ -2081,7 +1867,11 @@ class KinematicTreeObjectiveFunction(object):
         else:
             features = None
         if self._optimize['configs']:
-            configs = self._config_dict_list[1:]
+            # Decide whether to fix configs[0] or include it in the param vector
+            if self._fix_zero_config:
+                configs = self._config_dict_list[1:]
+            else:
+                configs = self._config_dict_list
             if self._optimize['configs'] is not True:
                 # Select only the specified configs to optimize if a list of names is given
                 configs = [{name:config_dict[name] for name in self._optimize['configs']} for config_dict in configs]
@@ -2109,7 +1899,8 @@ class KinematicTreeObjectiveFunction(object):
 
     def unvectorize(self, vectorized_params):
         configs, twists, features = self._vectorizer.unvectorize(vectorized_params)
-        if configs is not None:
+        # Insert fixed zero config as configs[0] if fix_zero_config==True
+        if configs is not None and self._fix_zero_config:
             configs.insert(0, self._config_dict_list[0])
         return configs, twists, features
 
@@ -2187,6 +1978,7 @@ def main():
     configs, feature_obs = generate_synthetic_observations(tree, 20)
     final_configs, final_twists, final_features = tree.fit_params(feature_obs, configs=None, 
             optimize={'configs':True, 'params':True, 'features':False})
+    1/0
 
 
 if __name__ == '__main__':
