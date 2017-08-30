@@ -176,14 +176,10 @@ def get_closest_visible(data, index):
         raise RuntimeError('Markers are occluded in every frame of data')
 
 
-def collect_model_data():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('kinmodel_json', help='The JSON file with the kinematic model data')
-    parser.add_argument('output_npz', help='The output mocap data file')
-    args = parser.parse_args()
+def collect_model_data(kinmodel_json, output_npz):
 
     # Generate chains from the kinematic model file
-    kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json)
+    kin_tree = kinmodel.KinematicTree(json_filename=kinmodel_json)
     features = kin_tree.get_features()
     tree_marker_nums = []
     assignments = {}
@@ -260,9 +256,9 @@ def collect_model_data():
 
     #Add the full sequence and the id of the marker assignments to the dataset,
     #then write it to a file
-    with open(args.output_npz, 'w') as output_file:
+    with open(output_npz, 'w') as output_file:
         np.savez_compressed(output_file, **calib_frames)
-        print('Calibration sequences saved to ' + args.output_npz)
+        print('Calibration sequences saved to ' + output_npz)
 
 
 def collect_task_data():
@@ -325,6 +321,11 @@ def collect_task_data():
 
 if __name__ == '__main__':
     try:
-        collect_model_data()
+        parser = argparse.ArgumentParser()
+        parser.add_argument('kinmodel_json', help='The JSON file with the kinematic model data')
+        parser.add_argument('output_npz', help='The output mocap data file')
+        args = parser.parse_args()
+
+        collect_model_data(args.kinmodel_json, args.output_npz)
     except rospy.ROSInterruptException:
         pass

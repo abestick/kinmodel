@@ -11,13 +11,9 @@ from kinmodel.track_mocap import KinematicTreeTracker
 FRAMERATE = 50
 
 
-def main():
+def track(kinmodel_json_optimized):
     rospy.init_node('kin_tree_tracker')
     plt.ion()
-    parser = argparse.ArgumentParser()
-    parser.add_argument('kinmodel_json_optimized', help='The kinematic model JSON file')
-    # parser.add_argument('mocap_npz')
-    args = parser.parse_args()
 
     #Load the calibration sequence
     # calib_data = np.load(args.mocap_npz)
@@ -25,7 +21,7 @@ def main():
 
     # Load the mocap stream
     ukf_mocap = load_mocap.PointCloudMocapSource('/mocap_point_cloud')
-    tracker_kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
+    tracker_kin_tree = kinmodel.KinematicTree(json_filename=kinmodel_json_optimized)
     # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
 
@@ -51,4 +47,8 @@ def main():
     
 if __name__ == '__main__':
     # cProfile.run('main()', 'fit_kinmodel.profile')
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('kinmodel_json_optimized', help='The kinematic model JSON file')
+    # parser.add_argument('mocap_npz')
+    args = parser.parse_args()
+    track(args.kinmodel_json_optimized)

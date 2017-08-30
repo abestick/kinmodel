@@ -13,6 +13,7 @@ import cProfile
 import json
 import kinmodel
 import matplotlib.pyplot as plt
+from kinmodel.track_mocap import plane_based_transform, transform_points
 
 FRAMERATE = 50
 GROUP_NAME = 'tree'
@@ -24,14 +25,17 @@ def main():
     parser.add_argument('kinmodel_json_optimized', help='The kinematic model JSON file')
     parser.add_argument('mocap_npz', help='The .npz file from mocap_recorder.py')
     args = parser.parse_args()
+    fit_kinmodel(args.kinmodel_json, args.kinmodel_json_optimized, args.mocap_npz)
 
+
+def fit_kinmodel(kinmodel_json, kinmodel_json_optimized, mocap_npz):
     #Load the calibration sequence
-    calib_data = np.load(args.mocap_npz)
+    calib_data = np.load(mocap_npz)
     ukf_mocap = load_mocap.ArrayMocapSource(calib_data['full_sequence'][:,:,:], FRAMERATE).get_stream()
 
     # Get the base marker indices
     base_indices = []
-    kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json)
+    kin_tree = kinmodel.KinematicTree(json_filename=kinmodel_json)
     base_joint = kin_tree.get_root_joint()
     for child in base_joint.children:
         if not hasattr(child, 'children'):
@@ -46,6 +50,8 @@ def main():
     # Set the base frame coordinate transformation
     desired = ukf_mocap.read()[0][base_indices,:,0]
     desired = desired - np.mean(desired, axis=0)
+    # desired_transform = plane_based_transform(desired, normal='y', z=[0, 1, 0])
+    # desired = transform_points(desired, desired_transform)
     data_array = np.dstack((calib_data['full_sequence'][:,:,0:1],
                                 calib_data['full_sequence'][:,:,calib_data[GROUP_NAME]]))
     mocap = load_mocap.ArrayMocapSource(data_array, FRAMERATE).get_stream()    
@@ -70,7 +76,7 @@ def main():
     print('Second optimization...')
     final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs, configs=final_configs,
             optimize={'params':True, 'features':True, 'configs':True})
-    kin_tree.json(args.kinmodel_json_optimized)
+    kin_tree.json(kinmodel_json_optimized)
     
 if __name__ == '__main__':
     cProfile.run('main()', 'fit_kinmodel.profile')

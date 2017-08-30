@@ -829,11 +829,47 @@ def determine_hand_coordinate_transform(hand_points, arm_points, zero_thresh=1e-
     return homog_transform, desired_hand_points[:, :3]
 
 
-def determine_joint_coordinate_transform(link_points, joint, zero_thresh=1e-15):
+def transform_points(points, transform):
+    homog_points = np.hstack((points, np.ones((len(points), 1))))
+    return np.array([transform.dot(row) for row in homog_points])[:, :3]
+
+
+def check_orthogonal(u, v, zero_thresh=1e-15):
+    return abs(u.dot(v)) < zero_thresh
+
+
+def orthogonal_projection(v, fixed):
+    return np.cross(np.cross(fixed, v), fixed)
+
+
+def transform_from_axes(origin, **axes):
+    order = ['x', 'y', 'z']
+    assert len(set(axes).intersection(set(order))) == 2, 'Must provide two axes'
+    assert check_orthogonal(*axes.values()), 'Axes must be orthogonal'
+    x, y, z = [unit_vector(axes[axis]) if axis in axes else unit_vector(np.cross(axes[order[(i+1)%3]], axes[order[(i+2)%3]]))
+        for i, axis in enumerate(order)]
+
+    rotation_matrix = np.vstack((x, y, z)).T
+
+    return np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))  
+
+
+def plane_based_transform(points, normal='y', **other):
+    order = ['x', 'y', 'z']
+    (other_name, other_axis), = other.items()
+    assert len(other) == 1 and other_name in order, 'Must pass the key word argument normal and one of x, y or z'
+    assert normal in order, 'Normal must be either x, y or z'
+    axes = {other_name: np.array(other_axis)}
+
+    origin, normal_vector = best_fitting_plane(points)
+    axes[normal] = orthogonal_projection(normal_vector, axes[other_name])
+    return transform_from_axes(origin, **axes)
+
+
+def determine_joint_coordinate_transform(link_points, joint):
     """
-    Defines the hand frame as the origin at the mean of the hand points, the z axis normal to the plane they form and
-    the x axis the vector to the arm at zero conditions projected onto this plane. It then transforms the hand points
-    into this frame and returns the transform and the transformed hand points
+    Defines the link frame as the origin at the mean of the link points, the z axis the normal to the the plane 
+    formed by the points and the y axis as the joint axis projected onto this plane.
     :param link_points:
     :param joint_twist:
     :param zero_thresh:
@@ -851,10 +887,9 @@ def determine_joint_coordinate_transform(link_points, joint, zero_thresh=1e-15):
         if isinstance(joint.twist, kinmodel.OneDofTwistJoint):
 
             joint_axis = joint.twist.twist().omega()
-            axis_z = joint_axis.dot(z_axis) * z_axis
-            y_axis = unit_vector(joint_axis - axis_z)
+            y_axis = unit_vector(orthogonal_projection(z_axis, joint_axis))
 
-            assert abs(y_axis.dot(z_axis)) < zero_thresh, "Axes are not orthogonal!"
+            assert check_orthogonal(z_axis, y_axis), "Axes are not orthogonal!"
 
             x_axis = np.cross(y_axis, z_axis)
 
