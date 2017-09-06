@@ -26,7 +26,7 @@ class MarkerAssignments(object):
         #Subscribe to the mocap stream, and republish highlighted points on
         #a new topic
         self._pub = rospy.Publisher('/mocap_highlighted_points', 
-                                    sensor_msgs.PointCloud, queue_size=100)
+                                    sensor_msgs.PointCloud)
         self._sub = rospy.Subscriber('/mocap_point_cloud', 
                                      sensor_msgs.PointCloud, 
                                      self._new_frame_callback)
@@ -66,6 +66,9 @@ class MarkerAssignments(object):
 
     def get_last_frame(self):
         return self._last_frame
+
+    def get_groups(self):
+        return self._tree.get_joints().keys()
 
 
 class MocapFilePlayer(object):
@@ -112,7 +115,6 @@ class MocapFilePlayer(object):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('input_kinmodel_file', help='The input kinematic model')
-    parser.add_argument('output_kinmodel_file', help='The output kinematic model')
     parser.add_argument('--mocap_file', help='Optional .npz file with the mocap sequence')
     args = parser.parse_args()
     rospy.init_node('marker_assignments')
@@ -124,43 +126,13 @@ def main():
 
     # Load the kinematic tree, list all joints, and delete existing markers
     kin_tree = kinmodel.KinematicTree(json_filename=args.input_kinmodel_file)
-    tree_joints = kin_tree.get_joints()
-    for joint in tree_joints:
-        for child in tree_joints[joint].children:
-            if not hasattr(child, 'children'):
-                # This is a feature - delete it
-                tree_joints[joint].children.remove(child)
-
     assign = MarkerAssignments(kin_tree)
 
-    # Get the first mocap frame to determine how many markers there are
-    # Wait 30 seconds for the frame and quit if it isn't received
-    num_markers = None
-    for i in range(300):
-        frame = assign.get_last_frame()
-        if frame is not None:
-            num_markers = len(frame.points)
-            break
-        else:
-            time.sleep(0.1)
-    if num_markers is None:
-        print('Error: No mocap stream on /mocap_point_cloud')
-        print('Quitting now...')
-        return
-
     # Highlight each mocap point and ask the user for an assignment
-    for i in range(num_markers):
-        assign.highlight_markers([i])
-        group_name = raw_input('Enter a group name for marker ' + str(i) + ' or <Enter> to skip: ')
-        if group_name.strip():
-            # If the string isn't empty, assign to a group
-            assign.assign_marker(i, group_name)
-
-            # Display the current group members
-            assign.highlight_group(group_name)
-            raw_input('Displaying group ' + group_name + ' - Press <Enter> to continue...')
-
-    assign._tree.json(args.output_kinmodel_file)
+    for group_name in assign.get_groups():
+        assign.highlight_group(group_name)
+        raw_input('Displaying group ' + group_name + ' - Press <Enter> to continue...')
+        
 
 if __name__ == '__main__':
     try:

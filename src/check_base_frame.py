@@ -7,10 +7,6 @@ import kinmodel
 import matplotlib.pyplot as plt
 import rospy
 from kinmodel.track_mocap import KinematicTreeTracker
-from extra_baxter_tools.conversions import matrix_to_pose_msg, array_to_point_msg, stamp
-import tf
-from tf.transformations import inverse_matrix
-from geometry_msgs.msg import PoseStamped, PointStamped
 
 FRAMERATE = 50
 
@@ -26,11 +22,8 @@ def track(kinmodel_json_optimized):
     # Load the mocap stream
     ukf_mocap = load_mocap.PointCloudMocapSource('/mocap_point_cloud')
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=kinmodel_json_optimized)
-    # shoulder_point = array_to_point_msg(tracker_kin_tree.get_params()['shoulder'].params)
     # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
-    tf_pub = tf.TransformBroadcaster()
-    pub = rospy.Publisher('shoulder_point', PointStamped, queue_size=100)
 
     # Add the external frames to track
     # frame_tracker = KinematicTreeExternalFrameTracker(kin_tree, 'object_base')
@@ -43,15 +36,6 @@ def track(kinmodel_json_optimized):
     tracker = KinematicTreeTracker('test', tracker_kin_tree, 
         joint_states_topic='/kinmodel_state')
 
-    def publish_extras(*args, **kwargs):
-        transform = inverse_matrix(tracker.get_base_transform())
-        tf_pub.sendTransform(transform[0:3, 3],
-            tf.transformations.quaternion_from_matrix(transform),
-            rospy.Time.now(), 'base_frame', 'world')
-        # msg = stamp(shoulder_point, frame_id='base_frame')
-        # pub.publish(msg)
-
-    tracker.register_callback(publish_extras)
     #Run the tracker in the main thread for now
     tracker.run(ukf_mocap)
     

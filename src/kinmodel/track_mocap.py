@@ -42,7 +42,7 @@ class MocapTracker(object):
         """Stops the thread"""
         self.exit = True
 
-    def run(self, mocap_source, mocap_transformer=None, record=False):
+    def run(self, mocap_source, mocap_transformer=None, record=False, print_idx=False):
         """Runs the tracker in its own thread, with its own mocap source.
 
         This method shouldn't be used when running this tracker in a synchronized fashion
@@ -61,7 +61,8 @@ class MocapTracker(object):
             recorded_results = None
         stream = mocap_source.get_stream()
         for i, (frame, timestamp) in enumerate(stream):
-            print(i)
+            if print_idx:
+                print(i)
             if self.exit:
                 break
             if mocap_transformer is not None:
@@ -365,6 +366,9 @@ class KinematicTreeTracker(MocapUkfTracker):
         state_space_model = kinmodel.KinematicTreeStateSpaceModel(self._kin_tree)
         super(KinematicTreeTracker, self).__init__(name, state_space_model, marker_indices, transformer,
             joint_states_topic)
+
+    def get_base_transform(self):
+        return self._transformer.get_last_coordinates()
 
     def get_kin_tree_base_markers(self):
         # Get base marker names
@@ -849,6 +853,12 @@ def transform_from_axes(origin, **axes):
     x, y, z = [unit_vector(axes[axis]) if axis in axes else unit_vector(np.cross(axes[order[(i+1)%3]], axes[order[(i+2)%3]]))
         for i, axis in enumerate(order)]
 
+    print('x y z')
+    print(x)
+    print(y)
+    print(z)
+    print('origin')
+    print(origin)
     rotation_matrix = np.vstack((x, y, z)).T
 
     return np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))  

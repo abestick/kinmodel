@@ -67,6 +67,9 @@ class MocapRecorder():
     def get_array(self):
         return np.dstack(self._frames)
 
+    def get_times(self):
+        return self._times
+
     def get_annotations(self):
         return self._annotations
 
@@ -212,14 +215,18 @@ def collect_model_data(kinmodel_json, output_npz):
     #Capture the calibration sequence
     frame = 1
     for chain in CHAINS.keys():
-        while True:
-            command = raw_input('RECORDING ' + chain + ': Press <Enter> to capture a pose or n+<Enter> to move to the next chain: ')
-            if command is 'n':
-                break
-            else:
+        raw_input('Press ENTER to start recording frames')
+        for i in range(50):
+            # command = raw_input('RECORDING ' + chain + ': Press <Enter> to capture a pose or n+<Enter> to move to the next chain: ')
+            rospy.sleep(1)
+            # if command is 'n':
+            #     break
+            # else:
+            if True:
                 recorder.annotate(chain)
                 print('Captured frame ' + str(frame))
                 frame += 1
+
     recorder.stop()
 
     #Generate the sets of training samples
