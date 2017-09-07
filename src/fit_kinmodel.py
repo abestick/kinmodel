@@ -50,14 +50,11 @@ def fit_kinmodel(kinmodel_json, kinmodel_json_optimized, mocap_npz):
 
     # Set the base frame coordinate transformation
     desired = ukf_mocap.read()[0][base_indices,:,0]
-    print(desired)
     av = np.mean(desired, axis=0)
     # desired = desired - np.mean(desired, axis=0)
     print('Getting base transform')
     desired_transform = inverse_matrix(plane_based_transform(desired, normal='y', z=[0, 0, 1]))
-    # desired_transform = inverse_matrix(plane_based_transform(desired, normal='z', x=[1, 0, 0]))
     desired = transform_points(desired, desired_transform)
-    raw_input(desired)
     data_array = np.dstack((calib_data['full_sequence'][:,:,0:1],
                                 calib_data['full_sequence'][:,:,calib_data[GROUP_NAME]]))
     mocap = load_mocap.ArrayMocapSource(data_array, FRAMERATE).get_stream()    
@@ -76,7 +73,7 @@ def fit_kinmodel(kinmodel_json, kinmodel_json_optimized, mocap_npz):
         feature_obs.append(feature_dict)
 
     # Run the optimization
-    print(' optimization...')
+    print('\nFirst optimization...')
     kin_tree.set_features(feature_obs[0])
     final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs,
             optimize={'params':True, 'features':False, 'configs':True})

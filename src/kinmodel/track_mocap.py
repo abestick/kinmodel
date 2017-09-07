@@ -853,12 +853,6 @@ def transform_from_axes(origin, **axes):
     x, y, z = [unit_vector(axes[axis]) if axis in axes else unit_vector(np.cross(axes[order[(i+1)%3]], axes[order[(i+2)%3]]))
         for i, axis in enumerate(order)]
 
-    print('x y z')
-    print(x)
-    print(y)
-    print(z)
-    print('origin')
-    print(origin)
     rotation_matrix = np.vstack((x, y, z)).T
 
     return np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))  

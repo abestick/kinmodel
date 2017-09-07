@@ -2,6 +2,7 @@ import numpy as np
 import scipy.linalg as spla
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import pdb
 
 np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
 
@@ -152,6 +153,7 @@ def generate_sigma_pts(mean, covariance, alpha_squared=1.0e-3):
 
 def sigma_pts_to_mean_covariance(sigma_pts_x, sigma_pts_y, mean_weights, covar_weights):
     # Compute the means
+
     mean_x = np.sum(sigma_pts_x * mean_weights, axis=1)
     mean_y = np.sum(sigma_pts_y * mean_weights, axis=1)
 

@@ -1793,7 +1793,8 @@ class KinematicTreeStateSpaceModel(StateSpaceModel):
         Returned array is (sum(len(feature_i.vectorize())),).
         """
         # Shape array correctly
-        state_vector = np.atleast_1d(state_vector.squeeze())
+        # TODO: Make sure this change doesn't break anything else
+        # state_vector = np.atleast_1d(state_vector.squeeze())
         if state_vector.ndim < 2:
             state_vector = state_vector[:,None]
         output_arr = None

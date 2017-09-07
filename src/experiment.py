@@ -32,8 +32,8 @@ class Experiment(object):
 		if not os.path.exists(self.directory):
 			os.makedirs(self.directory)
 
-		details = open('%s.txt' % self.name, 'w')
-		details.write('Age: %s\nDate: %s\n' % (self.name, self.date))
+		details = open('%s/%s.txt' % (self.directory, self.name), 'w')
+		details.write('Age: %s\nDate: %s\n' % (self.age, self.date))
 		details.close()
 
 	def collect_model_data(self):
