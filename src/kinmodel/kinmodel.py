@@ -487,12 +487,23 @@ class Transform(GeometricPrimitive):
     def inv(self, child_frame_name=''):
         return Transform(homog_array=la.inv(self.homog()), reference_frame=child_frame_name)
 
-    def trans(self):
-        p = np.append(self._H[0:3,3], 0)
-        return Vector(p)
+    def trans(self, as_transform=False):
 
-    def rot(self):
-        return Rotation(self._H.copy())
+        if as_transform:
+            H = np.identity(4)
+            H[:3, 3] = self._H[0:3, 3]
+            return Transform(H)
+
+        else:
+            p = np.append(self._H[0:3,3], 0)
+            return Vector(p)
+
+    def rot(self, as_transform=False):
+        if as_transform:
+            return Transform(self.R(True))
+
+        else:
+            return Rotation(self._H.copy())
 
     def p(self):
         return self._H[0:3,3]
