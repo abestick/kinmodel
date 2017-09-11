@@ -351,7 +351,7 @@ class KinematicTreeTracker(MocapUkfTracker):
     joint_states_topic: string - the topic to publish joint states on, or None if a publisher isn't
         needed
     """
-    def __init__(self, name, kin_tree, joint_states_topic=None):
+    def __init__(self, name, kin_tree, joint_states_topic=None, scalar_states=False):
         self._kin_tree = kin_tree
         transformer = MocapTransformer()
 
@@ -363,7 +363,7 @@ class KinematicTreeTracker(MocapUkfTracker):
         base_idxs, base_frame_points = self.get_kin_tree_base_markers()
         transformer.set_coordinates(base_idxs, base_frame_points)
 
-        state_space_model = kinmodel.KinematicTreeStateSpaceModel(self._kin_tree)
+        state_space_model = kinmodel.KinematicTreeStateSpaceModel(self._kin_tree, scalar_states)
         super(KinematicTreeTracker, self).__init__(name, state_space_model, marker_indices, transformer,
             joint_states_topic)
 
@@ -568,7 +568,7 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
 
         self.attach_frame(self._kin_tree.get_root_joint().name, 'root', pose=kinmodel.Transform())
 
-    def attach_frame(self, joint_name, frame_name, tf_pub=True, pose=None):
+    def attach_frame(self, joint_name, frame_name, tf_pub=True, **presets):
         # Attach a static frame to the tree
         self._kin_tree._pox_stale = True
         self._kin_tree._dpox_stale = True
@@ -584,6 +584,7 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
             except AttributeError:
                 pass  # This feature isn't a Point
 
+        pose = presets.get('pose', None)
         if pose is None:
             # No pose specified, set to mean position of all other Point children of this joint
             # trans = np.zeros((3,))
@@ -594,6 +595,12 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
             # homog[0:3, 3] = trans
 
             homog = determine_joint_coordinate_transform(link_points, joints[joint_name])
+            if 'orientation' in presets:
+                homog[:3, :3] = presets['rotation']
+
+            if 'position' in presets:
+                homog[:3, 3] = presets['position']
+
             pose = kinmodel.Transform(homog_array=homog)
 
         new_feature = kinmodel.Feature(frame_name, pose)
