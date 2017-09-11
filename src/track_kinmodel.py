@@ -1,4 +1,13 @@
 #!/usr/bin/env python
+"""Script to track a kinematic tree model given a stream of mocap data.
+
+To track an already-fitted model:
+
+rosrun kinmodel track_kinmodel.py <kinmodel_json_optimized>
+
+where the args are:
+- <kinmodel_json_optimized>: the final kinematic model JSON file created by fit_kinmodel.py
+"""
 from __future__ import print_function
 import numpy as np
 import phasespace.load_mocap as load_mocap

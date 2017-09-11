@@ -1,4 +1,14 @@
 #!/usr/bin/env python
+"""The core library within the kinmodel package for model defining, saving, fitting, and 
+tracking.
+
+This file contains the core code to define a KinematicTree data structure, and to perform operations
+on such datastructures after creation. Supported operations include:
+- Saving/loading models to/from human readable JSON files
+- Fitting the parameters of models to sequences of mocap data
+- Tracking the state of a model given streaming or prerecorded motion capture data of the object
+- Computing forward kinematics maps and Jacobians for fitted KinematicTrees
+""" 
 from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
 import numpy as np
@@ -62,10 +72,12 @@ def new_geometric_primitive(input_data, reference_frame=''):
 
 def stack(*args, **kwargs):
     """
-    Takes multiple geometric objects and stacks their arrays, will throw a numpy error if incompatible shapes are passed
+    Takes multiple geometric objects and stacks their arrays, will throw a numpy error if
+    incompatible shapes are passed
     :param args: the objects tp stack
     :param kwargs: various options categorized below
-    homog (bool): When this is false, only the first three rows are taken, discarding homogeneous representation
+    homog (bool): When this is false, only the first three rows are taken, discarding homogeneous 
+    representation
     :return: numpy array
     :rtype: numpy.ndarray
     """
@@ -134,7 +146,8 @@ class StateSpaceModel(object):
     @abstractmethod
     def vectorize_measurement(self, feature_obs):
         """
-        Takes a dictionary of measurements and prepares it as a numpy array in the same order as the measurement_model
+        Takes a dictionary of measurements and prepares it as a numpy array in the same order as the
+        measurement_model
         produces z(k)
         :param dict feature_obs: a dictionary of the measurements
         :return: a numpy array z(k)
@@ -1978,7 +1991,6 @@ def main():
     configs, feature_obs = generate_synthetic_observations(tree, 20)
     final_configs, final_twists, final_features = tree.fit_params(feature_obs, configs=None, 
             optimize={'configs':True, 'params':True, 'features':False})
-    1/0
 
 
 if __name__ == '__main__':

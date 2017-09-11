@@ -1,4 +1,15 @@
 #!/usr/bin/env python
+"""Script to fit a kinematic tree model to a prerecorded mocap sequence.
+
+To fit a model to a data sequence:
+
+rosrun kinmodel fit_kinmodel.py <kinmodel_json> <kinmodel_json_optimized> <mocap_npz>
+
+where the args are:
+- <kinmodel_json>: JSON file with the model structure and an initial guess for the parameters
+- <kinmodel_json_optimized>: filename to output the optimized model and parameters to
+- <mocap_npz>: .npz with mocap training sequence, recorded by mocap_recorder.py
+"""
 from __future__ import print_function
 import numpy as np
 import scipy as sp

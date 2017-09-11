@@ -1,4 +1,14 @@
 #!/usr/bin/env python
+"""Script to easily add mocap features to a predefined kinematic model.
+
+To add marker features to an already defined kinematic model file:
+
+rosrun kinmodel mocap_generate_marker_assignments.py <input_kinmodel_file> <output_kinmodel_file>
+
+where the args are:
+- <input_kinmodel_file>: the kinematic model JSON file to which to add the markers
+- <output_kinmodel_file>: the path to save the final kinematic model JSON file to
+"""
 from __future__ import print_function
 import rospy
 import time
