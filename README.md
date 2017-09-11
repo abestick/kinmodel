@@ -15,3 +15,5 @@ Particularly useful files in this repo include:
 - `src/track_kinmodel_offline.py`: Run kinematic model tracking on a pre-recorded mocap sequence and plot the resulting joint trajectory
 - `src/mocap_generate_marker_assignments.py`: RViz GUI for generating a mapping between mocap marker indices and named features attached to a kinematic model
 - `src/kinmodel/mocap_recorder.py`: Records mocap sequences for later fitting of kinematic models
+
+This package depends on the [phasespace](https://github.com/abestick/phasespace) ROS package to interface with the mocap systems we have in the TeleImmersion Lab.
