@@ -1161,8 +1161,8 @@ class ParameterizedJoint(object):
     def from_dict(cls, attrib_dict):
         types = {'OneDofTwistJoint': OneDofTwistJoint, 'ThreeDofBallJoint':ThreeDofBallJoint}
         attrib_dict = attrib_dict.copy()
-        new_type = attrib_dict['joint_type']
-        del attrib_dict['joint_type']
+        new_type = attrib_dict.pop('joint_type')
+        # attrib_dict['params'] = attrib_dict['params'][3:] +  attrib_dict['params'][:3]
         return types[new_type](**attrib_dict)
 
     def twist_dict(self, name):

@@ -26,6 +26,7 @@ def track(kinmodel_json_optimized):
     # Load the mocap stream
     ukf_mocap = load_mocap.PointCloudMocapSource('/mocap_point_cloud')
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=kinmodel_json_optimized)
+    # tracker_kin_tree.json('new_'+kinmodel_json_optimized)
     # shoulder_point = array_to_point_msg(tracker_kin_tree.get_params()['shoulder'].params)
     # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
