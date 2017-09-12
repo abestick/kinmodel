@@ -4,7 +4,6 @@ import numpy as np
 import numpy.linalg as npla
 from std_msgs.msg import MultiArrayDimension, MultiArrayLayout, Float32MultiArray
 from geometry_msgs.msg import Pose, Twist, Point, Vector3
-from .kinmodel import Jacobian, Transform
 
 
 def multidot(*args):
@@ -30,7 +29,7 @@ def unit_vector(array):
 def jacobian_to_msg(jacobian):
     """
 
-    :param Jacobian jacobian:
+    :param jacobian:
     :return:
     """
     array = jacobian.J()

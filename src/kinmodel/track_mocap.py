@@ -145,11 +145,13 @@ class MocapFrameTracker(MocapTracker):
         tracked points with respect to the tracked frame. If None, this value is computed
         automatically as described above
     """
-    def __init__(self, name, tracked_frame_indices, tracked_frame_points=None):
+    def __init__(self, name, tracked_frame_indices, tracked_frame_points=None, world_frame_name='world'):
         super(MocapFrameTracker, self).__init__(name)
+        self.world_frame_name = world_frame_name
         self.tracked_frame_indices = np.array(tracked_frame_indices)
         self.tracked_frame_points = tracked_frame_points
-        self._last_transform = kinmodel.Transform(homog_array=np.identity(4))
+        self._last_transform = kinmodel.Transform(homog_array=np.identity(4), reference_frame=self.name,
+                                                  target=self.world_frame_name)
 
     def _process_frame(self, frame):
         """Computes the pose of the tracked frame
@@ -174,7 +176,9 @@ class MocapFrameTracker(MocapTracker):
             orig_points = frame[self.tracked_frame_indices[visible_inds], :, 0]
             desired_points = self.tracked_frame_points[visible_inds]
             try:
-                transform = kinmodel.Transform(homog_array=find_homog_trans(orig_points, desired_points)[0])
+                transform = kinmodel.Transform(homog_array=find_homog_trans(orig_points, desired_points)[0],
+                                               reference_frame=self.name,
+                                               target=self.world_frame_name)
                 self._last_transform = transform
             except ValueError:
                 # Not enough points visible for tf.transformations to compute the transform
@@ -567,8 +571,9 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         super(KinematicTreeExternalFrameTracker, self).__init__(base_tf_frame_name, convention)
 
         self.attach_frame(self._kin_tree.get_root_joint().name, 'root', pose=kinmodel.Transform())
+        self.split_joints = []
 
-    def attach_frame(self, joint_name, frame_name, tf_pub=True, **presets):
+    def attach_frame(self, joint_name, frame_name, tf_pub=False, **presets):
         # Attach a static frame to the tree
         self._kin_tree._pox_stale = True
         self._kin_tree._dpox_stale = True
@@ -621,7 +626,27 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         joints[joint_name].children.append(new_feature)
         self._attached_tf_frame_names.append(tf_frame_name)
 
+    def set_split_joint(self, joint_name):
+        self.split_joints.append(joint_name)
+        idx = self._joint_names.index(joint_name)
+        self._joint_names.remove(joint_name)
+        for i in range(3):
+            self._joint_names.insert(idx+i, '%s_%d' % (joint_name, i))
+
+    def unsplit(self, joint_dict):
+        for split_joint in self.split_joints:
+            split_joint_vals = [None]*3
+            for joint_name, joint_val in joint_dict.items():
+                if split_joint in joint_name:
+                    idx = int(joint_name[-1])
+                    split_joint_vals[idx] = joint_dict.pop(joint_name)
+
+            joint_dict[split_joint] = split_joint_vals
+
+        return joint_dict
+
     def set_config(self, joint_angles_dict):
+        joint_angles_dict = self.unsplit(joint_angles_dict)
         self._kin_tree.set_config(joint_angles_dict)
 
     def observe_frames(self, frames=None):
@@ -651,7 +676,8 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         self._update()
         row_names = [manip_name_frame + '_' + element for element in kinmodel.EULER_POSE_NAMES]
         minimial_jacobian = kinmodel.Jacobian(self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame),
-                                              row_names)
+                                              row_names, kinematic=1, reference_frame=base_frame_name,
+                                              manip_frame=manip_name_frame)
         return minimial_jacobian.pad(column_names=self._joint_names).reorder(column_names=self._joint_names)
 
     def _update(self):

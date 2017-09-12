@@ -49,9 +49,9 @@ def skew( v ):
     """
     v = asarray(v)
     z = zeros_like(v[0,...])
-    return array([[ z,           -v[2,...], v[1,...]],
-                                [ v[2,...], z,           -v[0,...]],
-                                [-v[1,...], v[0,...], z,            ]])
+    return array([[ z,       -v[2,...], v[1,...]],
+                  [ v[2,...], z,       -v[0,...]],
+                  [-v[1,...], v[0,...], z,     ]])
 
 def unskew( S ):
     """
@@ -106,10 +106,10 @@ def hat_( v ):
     v = asarray(v)
     z = zeros((4,4))
     return array([
-            [ 0,     -v[2], v[1], v[3] ],
-            [ v[2], 0,   -v[0], v[4] ],
-            [-v[1], v[0], 0,        v[5] ],
-            [ 0,        0,      0,      0] ])
+            [ 0,    -v[5], v[4],  v[0] ],
+            [ v[5], 0,     -v[3], v[1] ],
+            [-v[4], v[3],  0,     v[2] ],
+            [ 0,    0,     0,     0    ]])
 
 def hat( v ):
     """
@@ -124,10 +124,10 @@ def hat( v ):
     v = asarray(v)
     z = zeros_like(v[0,...])
     return array([
-            [ z,             -v[2,...], v[1,...], v[3,...] ],
-            [ v[2,...], z,           -v[0,...], v[4,...] ],
-            [-v[1,...], v[0,...], z,                v[5,...] ],
-            [ z,                z,              z,              z] ])
+            [ z,       -v[5,...], v[4,...],  v[0,...] ],
+            [ v[5,...], z,        -v[3,...], v[1,...] ],
+            [-v[4,...], v[3,...], z,         v[2,...] ],
+            [ z,        z,        z,         z      ] ])
 
 def unhat( S ):
     """
@@ -141,7 +141,7 @@ def unhat( S ):
     #S = asarray(S)
     #return asarray([S[2,1],S[0,2],S[1,0],S[0,3],S[1,3],S[2,3]])
     S = asarray(S)
-    return array([S[2,1,...],S[0,2,...],S[1,0,...],S[0,3,...],S[1,3,...],S[2,3,...]])
+    return array([S[0,3,...],S[1,3,...],S[2,3,...],S[2,1,...],S[0,2,...],S[1,0,...]])
 
 def screw( v ):
     """
@@ -157,10 +157,10 @@ def screw( v ):
     z = zeros_like(v[0,...])
     o = ones_like(v[0,...])
     return array([
-            [ z, -v[...,2], v[...,1], v[...,3] ],
-            [ v[...,2], z,-v[...,0], v[...,4] ],
-            [-v[...,1], v[...,0], z, v[...,5] ],
-            [ z,                 z,             z, o] ])
+            [ z,        -v[...,5], v[...,4],  v[...,0]],
+            [ v[...,5], z,         -v[...,3], v[...,1]],
+            [-v[...,4], v[...,3],  z,         v[...,2]],
+            [ z,        z,         z,         o       ]])
 
 #def unscrew( S ):
 #   """
@@ -267,7 +267,7 @@ def expse3(xi, th=1., dbg=False):
     """
     xi = np.asarray(xi).flatten()
     assert xi.size == 6 # se3 twist
-    om,v = xi[:3][:,np.newaxis],xi[3:][:,np.newaxis]
+    v, om = xi[:3][:,np.newaxis],xi[3:][:,np.newaxis]
     I = np.identity(3)
     # Case 1 (om = 0) in MLS Prop 2.8
     if allclose(om,0):
@@ -301,8 +301,8 @@ def expse3_(xi, th=1., dbg=False):
     #xi = np.asarray(xi).flatten()
     xi = np.asarray(xi)
     #assert xi.size == 6 # se3 twist
-    #om,v = xi[:3][:,np.newaxis],xi[3:][:,np.newaxis]
-    om,v = xi[:3],xi[3:]
+    #v, om = xi[:3][:,np.newaxis],xi[3:][:,np.newaxis]
+    v, om = xi[:3],xi[3:]
     I = np.identity(3)
     # Case 2 (om \ne 0) in MLS Prop 2.8
     ph = np.sqrt(np.sum(om * om,0))
@@ -334,15 +334,15 @@ def dexpse3(xi, th=1., dbg=False):
     """
     xi = np.asarray(xi).flatten()
     assert xi.size == 6 # se3 twist
-    om,v = xi[:3][:,np.newaxis],xi[3:][:,np.newaxis]
+    v, om = xi[:3][:,np.newaxis],xi[3:][:,np.newaxis]
     I = np.identity(6)
     # om = 0; Eqn. (33) in \cite{HeZhaoYangYang2010}
     if allclose(om,0):
-        dxi = th*I*[0.,0.,0.,1.,1.,1.]
+        dxi = th*I*[1.,1.,1.,0.,0.,0.]
         dth = xi[:,np.newaxis]
     # om \ne 0; Eqn (14) in \cite{HeZhaoYangYang2010}
     else:
-        Om = ad(xi); 
+        Om = ad(xi)
         Om2 = np.dot(Om,Om); Om3 = np.dot(Om2,Om); Om4 = np.dot(Om3,Om)
         s = np.sqrt((om**2).sum())
         ph = s*th
@@ -380,7 +380,7 @@ def dexpse3_(xi, th=1., dbg=False):
         dth - 6 x 1 x ... x N - derivatives as twists 
     """
     xi = np.asarray(xi)
-    om,v = xi[:3],xi[3:]
+    v, om = xi[:3],xi[3:]
     sh = list(xi.shape[1:])
     I = np.identity(6).reshape([6,6]+[1]*(len(xi.shape)-1))
 
@@ -426,7 +426,7 @@ def seToSE( x ):
 def Adj( K ):
     """
     Note: This is the adjoint operator for a twist (v,om), as opposed
-    to the (om,v) convention used by most other functions. -AB
+    to the (v, om) convention used by most other functions. -AB
     
     The Adj operator for a rigid motion K
     
@@ -515,7 +515,7 @@ def ad(xi):
     ad = ad(xi)
 
     Inputs:
-        xi - (om,v) \in R^n
+        xi - (v, om) \in R^n
 
     Outputs:
         ad - 2n x 2n - adjoint transformation
@@ -523,7 +523,7 @@ def ad(xi):
                  ( skew(v)  skew(om) )
     """
     xi = xi.flatten(); n = xi.size/2
-    omh,vh = skew(xi[:3]),skew(xi[3:])
+    vh, omh = skew(xi[:3]),skew(xi[3:])
     ad = np.r_[np.c_[omh, np.zeros((n,n))], np.c_[vh, omh]]
     return ad
 
@@ -532,7 +532,7 @@ def ad_(xi):
     ad = ad(xi)
 
     Inputs:
-        xi - (om,v) \in R^n
+        xi - (v, om) \in R^n
 
     Outputs:
         ad - 2n x 2n - adjoint transformation
@@ -540,10 +540,10 @@ def ad_(xi):
                  ( skew(v)  skew(om) )
     """
     n,s = xi.shape[0]/2,list(xi.shape[1:])
-    Om,V = skew(xi[:3]),skew(xi[3:])
+    v, om = skew(xi[:3]),skew(xi[3:])
 
-    ad = np.vstack(( np.hstack(( Om, np.zeros([n,n]+s) )), 
-                                     np.hstack(( V, Om )) ))
+    ad = np.vstack(( np.hstack(( om, np.zeros([n,n]+s) )),
+                                     np.hstack(( v, om )) ))
 
     return ad
 

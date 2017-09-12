@@ -17,6 +17,7 @@ from tf.transformations import euler_matrix, quaternion_matrix, quaternion_from_
 from copy import deepcopy
 from numbers import Number
 import warnings
+from tools import colvec
 
 
 class abstractclassmethod(classmethod):
@@ -174,20 +175,22 @@ class GeometricPrimitive(object):
         output = self.__class__.__name__ + ": " + str(self.homog())
         return output
 
-    def __mul__(self, other):
-        homog1 = self.homog()
-        homog2 = other.homog()
-
-        #Check that dimensions are compatible
-        if homog1.shape != (4,4):
-            raise TypeError("Dimension mismatch - can't compose primitives in this order")
-
-        homog_result = homog1.dot(homog2)
-        return new_geometric_primitive(homog_result)
-
     @abstractmethod
     def __div__(self, other):
         pass
+
+    @abstractmethod
+    def transform(self):
+        return Transform()
+
+    def __mul__(self, other):
+        if isinstance(other, GeometricPrimitive):
+            transform = self.transform()
+
+            return transform.apply_transform(other)
+
+        else:
+            raise NotImplementedError('Multiplication not implemented for %s' % type(other))
 
     def __truediv__(self, other):
         return self.__div__(other)
@@ -208,6 +211,782 @@ class GeometricPrimitive(object):
 
     def copy(self):
         return deepcopy(self)
+
+
+class Transform(GeometricPrimitive):
+    """
+    g = Transform(...)  element of SE(3)
+
+        .rot() - Rotation object
+        .trans() - Vector object
+        .homog() - (4,4) - homogeneous transformation ndarray
+        .p() - (3,) - translation ndarray
+        .R() - (3,3) - rotation ndarray
+    """
+    conventions = {'quaternion': QUATERNION_POSE_NAMES,
+                   'euler': EULER_POSE_NAMES}
+
+    @classmethod
+    def from_dict(cls, dictionary, convention='euler'):
+        element_names = cls.conventions[convention]
+        assert set(element_names) == set(dictionary)
+        pose = np.array([float(dictionary[pose_name]) for pose_name in element_names])
+        return cls.from_pose_array(pose)
+
+    @classmethod
+    def from_pose_array(cls, pose_array):
+        homog_array = np.identity(4)
+        homog_array[:, 3] = pose_array[:3]
+        homog_array[:3, :3] = quaternion_matrix(pose_array[3:])
+        return cls(homog_array)
+
+    @classmethod
+    def from_p_R(cls, translation_array, rotation_matrix):
+        homog_array = np.identity(4)
+        homog_array[:, 3] = np.array(translation_array).flatten()
+        homog_array[:3, :3] = np.array(rotation_matrix).squeeze()
+        return cls(homog_array)
+
+    def __init__(self, homog_array=None, reference_frame='', target=''):
+        if homog_array is None:
+            self._H = np.identity(4)
+        else:
+            if homog_array.shape != (4, 4):
+                raise ValueError('Input ndarray must be (4,4)')
+            self._H = homog_array
+
+        super(Transform, self).__init__(reference_frame, target)
+
+    def target(self):
+        return self._target
+
+    def homog(self):
+        return self._H
+
+    def transform(self):
+        return self
+
+    def inv(self):
+        return Transform(homog_array=la.inv(self.homog()), reference_frame=self._target, target=self._reference_frame)
+
+    def trans(self):
+        p = np.append(self._H[0:3, 3], 0)
+        return Vector(p, reference_frame=self._reference_frame, target=self._target)
+
+    def trans_only(self):
+        H = np.identity(4)
+        H[:3, 3] = self._H[0:3, 3]
+        return Transform(H, reference_frame=self._reference_frame, target=self._target)
+
+    def rot(self):
+
+        return Rotation(self._H.copy(), reference_frame=self._reference_frame, target=self._target)
+
+    def rot_only(self):
+        return Transform(self.R(True), reference_frame=self._reference_frame, target=self._target)
+
+    def p(self):
+        return self._H[0:3, 3]
+
+    def R(self, homog=False):
+        if homog:
+            H = self._H.copy()
+            H[:3, 3] = 0
+            return H
+        else:
+            return self._H[0:3, 0:3]
+
+    def pose(self, convention='euler'):
+        pose = np.empty(6 + int(convention == 'quaternion'))
+        pose[:3] = self.trans().q()
+        if convention == 'quaternion':
+            pose[3:] = quaternion_from_matrix(self.rot().homog())
+
+        elif convention == 'euler':
+            pose[3:] = euler_from_matrix(self.R())
+
+        else:
+            raise NotImplementedError('Convention %s not yet implemented.' % convention)
+
+        return pose
+
+    def to_dict(self, convention='euler'):
+        return dict(zip(self.conventions[convention], self.pose(convention)))
+
+    def names(self, prefix='', convention='euler'):
+        return [prefix + name for name in self.conventions[convention]]
+
+    def adjoint(self):
+        adj = np.zeros((6, 6))
+        adj[:3, :3] = self.R()
+        adj[3:, 3:] = self.R()
+        adj[:3, 3:] = se3.skew(self.p()).dot(self.R())
+        return adj
+
+    @check_reference_frames
+    def __sub__(self, other):
+        if isinstance(other, Transform):
+            nu = self.trans() - other.trans()  # the difference in position in the shared reference frame
+            relative_rotation = self.rot().T() * other.rot()  # the relative rotation
+            relative_rotation_vector = relative_rotation.axis_angle()  # the axis-angle vector in this one's child frame
+            reference_rotation_vector = self.rot() * relative_rotation_vector  # convert it to the shared reference frame
+
+            # return result as a Twist for unit time delta, expressed in the shared reference frame
+            return Twist(omega=reference_rotation_vector, nu=nu.q(), reference_frame=self._reference_frame,
+                         target=self._target)
+
+        else:
+            raise TypeError('Subtraction not supported for %s' % type(other))
+
+    def __div__(self, other):
+
+        if isinstance(other, Transform):
+            return other.inv() * self
+
+        else:
+            raise NotImplementedError()
+
+    def __array__(self, dtype=float):
+        return self.pose().astype(dtype=dtype)
+
+    def apply_transform(self, primitive):
+        assert isinstance(primitive, GeometricPrimitive), 'Can only transform GeometricPrimitves, you passed %s' \
+                                                          % type(primitive)
+
+        result = primitive.copy()
+
+        if self._target != primitive.reference_frame():
+            warnings.warn(Warning('Attempting to apply transform from %s to %s on primitive whose reference frame is %s'
+                                  % (self._target, self._reference_frame, primitive.reference_frame())))
+
+        if isinstance(primitive, Twist):
+            result._xi = colvec(self.adjoint().dot(primitive._xi))
+
+        elif isinstance(primitive, Rotation):
+            result._R = self.R().dot(primitive.R())
+
+        else:
+            result._H = self._H.dot(primitive._H)
+
+        result._reference_frame = self._reference_frame
+        return result
+
+    def R_bar(self):
+        return self.rot().R_bar()
+
+    def P_bar(self):
+        return self.trans().P_bar()
+    
+    def __mul__(self, other):
+        if isinstance(other, np.ndarray):
+            return self._H.dot(other)
+        
+        else:
+            return super(Transform, self).__mul__(other)
+
+
+class Twist(GeometricPrimitive):
+    """ xi = Twist(...)  element of se(3)
+
+        .xi() - 6 x 1 - twist coordinates ndarray (om, v)
+        .omega() - 3 x 1 - rotation axis ndarray
+        .nu() - 3 x 1 - translation direction ndarray
+        .exp(theta) - Transform object
+
+        ._xi - 6 x 1 - twist coordinates (om, v)
+    """
+
+    twist_names = EULER_POSE_NAMES
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        new_dict = {key[-1]: value for key, value in dictionary.items()}
+        xi = np.array([new_dict[key] for key in EULER_POSE_NAMES])
+        return cls(xi=xi)
+
+    def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None, reference_frame='', target='',
+                 observation_frame=None, reference_point=None):
+        if xi is not None:
+            self._xi = xi.squeeze()[:, None].astype('float64')
+            assert self._xi.shape == (6, 1), 'xi is not (6, 1), it is %s' % str(self._xi.shape)
+        elif copy is not None:
+            self._xi = copy.xi().copy()
+        elif omega is not None and nu is not None:
+            omega = np.asarray(omega, dtype='float64')
+            nu = np.asarray(nu, dtype='float64')
+            omega = np.reshape(omega, (3, 1))
+            nu = np.reshape(nu, (3, 1))
+            assert omega.shape == (3, 1) and nu.shape == (3, 1)
+            # TODO: Swapped so nu was on top, does this break anything???
+            self._xi = np.vstack((nu, omega))
+        elif vectorized is not None:
+            self._xi = np.asarray(vectorized, dtype='float64')
+        else:
+            raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
+
+        super(Twist, self).__init__(reference_frame, target)
+        self._observation_frame = reference_frame if observation_frame is None else observation_frame
+        self._reference_point = target if reference_point is None else reference_point
+
+    def target(self):
+        return self._target
+
+    def observation_frame(self):
+        return self._observation_frame
+
+    def reference_point(self):
+        return self._reference_point
+
+    def __repr__(self):
+        output = self.__class__.__name__ + ": " + str(self.xi().squeeze())
+        return output
+
+    def xi(self):
+        return self._xi
+
+    def omega(self):
+        return self._xi.squeeze()[:3]
+
+    def nu(self):
+        return self._xi.squeeze()[3:]
+
+    def exp(self, theta):
+        return Transform(homog_array=se3.expse3(self._xi, theta), reference_frame=self._reference_frame,
+                         target=self._reference_point)
+
+    def vectorize(self):
+        return np.array(self._xi).squeeze()
+
+    def normalize(self):
+        norm_constant = la.norm(self.omega())
+        self._xi = self._xi / norm_constant
+        return norm_constant
+
+    def homog(self):
+        # Get the skew-symmetric, (4,4) matrix form of the twist
+        return se3.hat_(self._xi)
+
+    def transform(self):
+        return Transform(homog_array=self.homog(), reference_frame=self._reference_frame,
+                         target=self._reference_point)
+
+    def _json(self):
+        return self._xi.squeeze().tolist()
+
+    def to_dict(self, prefix=''):
+        return {prefix + key: value for key, value in zip(self.twist_names, self._xi)}
+
+    def names(self, prefix=''):
+        return [prefix + name for name in self.twist_names]
+
+    def __array__(self, dtype=float):
+        return self._xi.squeeze().astype(dtype=dtype)
+
+    def _check_compat(self, other):
+        """
+
+        :param Twist other:
+        :return:
+        """
+        if self._reference_frame != other._reference_frame:
+            warnings.warn(ReferenceFrameWarning(self._reference_frame, other._reference_frame))
+        if self._reference_point != other._reference_point:
+            warnings.warn(Warning('Body frames of twists differ when performing addition/subtraction. %s vs %s' %
+                                  (self._reference_point, other._reference_point)))
+
+    def __mul__(self, other):
+        if isinstance(other, Number):
+            result = self.copy()
+            result._xi *= other
+            return result
+
+        else:
+            return super(Twist, self).__mul__(other)
+
+    def __div__(self, other):
+        if isinstance(other, Number):
+            result = self.copy()
+            result._xi /= other
+            return result
+
+    def __add__(self, other):
+        if isinstance(other, Twist):
+            self._check_compat(other)
+            if self._target == other._observation_frame:
+                new_target = other._target
+                new_observation_frame = self._observation_frame
+
+            elif self._observation_frame == other_target:
+                new_target = self._target
+                new_observation_frame = other._observation_frame
+
+            else:
+                warnings.warn(Warning('Performing an addition of twists that does not result in a relative velocity.\n'
+                                      'Body frame: %s, %s'
+                                      'Observation frames: %s, %s'
+                                      % (self._target, other._target,
+                                         self._observation_frame, other._observation_frame)))
+                new_target = ''
+                new_observation_frame = ''
+
+            return Twist(xi=self._xi + other._xi, reference_frame=self._reference_frame,
+                         reference_point=self._reference_point, target=new_target,
+                         observation_frame=new_observation_frame)
+
+    def __sub__(self, other):
+        if isinstance(other, Twist):
+            self._check_compat(other)
+            if self._observation_frame != other._observation_frame:
+                warnings.warn(Warning('Performing subtraction of twists with differing observation frames. %s vs %s'
+                                      % (self._observation_frame, other._observation_frame)))
+                return Twist(xi=self._xi - other._xi, reference_frame=self._reference_frame,
+                             reference_point=self._reference_point)
+
+            return Twist(xi=self._xi - other._xi, reference_frame=self._reference_frame,
+                         reference_point=self._reference_point, observation_frame=other._target,
+                         target=self._target)
+
+    def __neg__(self):
+        result = self.copy()
+        result._xi = -self._xi
+        result._observation_frame = self._reference_frame
+        result._reference_frame = self._observation_frame
+        return result
+
+    @check_reference_frames
+    def rotate(self, rot):
+        """
+
+        :param Rotation rot:
+        :return:
+        """
+        return rot * self
+
+    @check_reference_frames
+    def set_reference_point(self, vec):
+        """
+
+        :param Vector vec:
+        :return:
+        """
+        if vec._origin == self._reference_point:
+            vec = -vec
+        if vec._target != self._reference_point:
+            warnings.warn('You should change the reference point with a vector that originates at the new reference '
+                          'point and targets the old reference point (%s).\n'
+                          'You provided %s -> %s' % (self._reference_point, vec._origin, vec._target))
+
+        return vec.apply_translation(self)
+
+
+class Rotation(GeometricPrimitive):
+    """ R = Rotation(...)  element of SO(3)
+
+        .R() - (3,3) - rotation matrix ndarray
+        .homog() - (4,4) - homogeneous coordinates ndarray (for a pure rotation)
+    """
+
+    quaternion_names = QUATERNION_POSE_NAMES[3:]
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        quaternion = np.array([dictionary[quaternion_name] for quaternion_name in cls.quaternion_names])
+        return cls.from_quaternion(quaternion)
+
+    @classmethod
+    def from_quaternion(cls, quaternion):
+        homog_array = np.identity(4)
+        homog_array[:3, :3] = quaternion_matrix(quaternion)
+        return cls(homog_array)
+
+    def __init__(self, homog_array=None, reference_frame='', target=''):
+        if homog_array is None:
+            self._R = np.identity(3)
+        else:
+            if homog_array.shape != (4, 4):
+                raise ValueError('Input ndarray must be (4,4)')
+            self._R = homog_array[0:3, 0:3].astype('float64')
+
+        super(Rotation, self).__init__(reference_frame, target)
+
+    def target(self):
+        return self._target
+
+    def R(self):
+        return self._R
+
+    def homog(self):
+        homog_matrix = np.identity(4)
+        homog_matrix[0:3, 0:3] = self._R
+        return homog_matrix
+
+    def quaternion(self):
+        return quaternion_from_matrix(self.R())
+
+    def axis_angle(self):
+        u = np.array([self._R[2, 1] - self._R[1, 2],
+                      self._R[0, 2] - self._R[2, 0],
+                      self._R[1, 0] - self._R[0, 1]])
+        return u
+
+    def to_dict(self):
+        return dict(zip(self.quaternion_names, self.quaternion()))
+
+    def names(self, prefix=''):
+        return [prefix + name for name in self.quaternion_names]
+
+    def apply_rotation(self, other):
+        if isinstance(other, Rotation):
+            result = self.copy()
+            result._R = self._R.dot(other._R)
+            return result
+
+        elif isinstance(other, Twist):
+            result = other.copy()
+            result._xi = colvec(self.R_bar().dot(other.xi()))
+            result._reference_frame = self._reference_frame
+            return result
+
+        elif isinstance(other, np.ndarray):
+            return self._R.dot(other)
+
+        else:
+            super(Rotation, self).__mul__(other)
+
+    def __div__(self, other):
+        if isinstance(other, float):
+            new = self.copy()
+            new._R /= other
+            return new
+
+        else:
+            raise NotImplementedError()
+
+    def __array__(self, dtype=float):
+        return self.quaternion().astype(dtype=dtype)
+
+    def T(self):
+        result = self.copy()
+        result._R = result._R.T
+        result._reference_frame = self._target
+        result._target = self._reference_frame
+        return result
+
+    def transform(self):
+        homog = np.eye(4)
+        homog[:3, :3] = self._R
+        return Transform(homog, reference_frame=self._reference_frame, target=self._target)
+
+    def R_bar(self):
+        return block_diag(self._R, self._R)
+
+    def rot(self):
+        return self
+    
+    def __mul__(self, other):
+        if isinstance(other, np.ndarray):
+            return self._R.dot(other)
+        #
+        # elif isinstance(other, Rotation):
+        #     result = other.copy()
+        #     result._R = self._R.dot(other._R)
+        #     result._reference_frame = self._reference_frame
+        #     return result
+        
+        else:
+            return super(Rotation, self).__mul__(other)
+
+
+class Vector(GeometricPrimitive):
+    """ x = Vector(...)  translation in R^3
+
+        .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
+        .q() - (3,) - cartesian coordinates ndarray
+    """
+
+    cartesian_names = QUATERNION_POSE_NAMES[:3]
+
+    @classmethod
+    def from_cartesian(cls, cartesian):
+        return cls(np.append(cartesian, 0))
+
+    @classmethod
+    def from_point(cls, point):
+        return cls.from_cartesian(point.q())
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
+        return cls(homog_array)
+
+    def __init__(self, homog_array=None, reference_frame='', origin='', target=''):
+        if homog_array is None:
+            self._H = np.zeros(4)
+        else:
+            if homog_array.shape != (4,):
+                raise ValueError('Input ndarray must be (4,)')
+            self._H = homog_array.astype('float64')
+
+        super(Vector, self).__init__(reference_frame, target)
+        self._origin = origin
+
+    def origin(self):
+        return self._origin
+
+    def target(self):
+        return self._target
+
+    def q(self):
+        return self._H[0:3]
+
+    def homog(self):
+        return self._H
+
+    def norm(self):
+        return la.norm(self.q())
+
+    def to_dict(self):
+        return dict(zip(self.cartesian_names, self.q()))
+
+    def names(self, prefix=''):
+        return [prefix + name for name in self.cartesian_names]
+
+    @check_reference_frames
+    def __add__(self, other):
+
+        if isinstance(other, Vector):
+            if self._origin == other._target:
+                new_origin = other._origin
+                new_target = self._target
+            elif self._target == other._origin:
+                new_origin = self._origin
+                new_target = other._target
+            else:
+                new_origin = self._origin
+                new_target = ''
+            return Vector(self.homog() + other.homog(), reference_frame=other._reference_frame, origin=new_origin,
+                          target=new_target)
+
+        elif isinstance(other, Point):
+            return Point(self.homog() + other.homog(), reference_frame=other._reference_frame, target=self._target)
+
+        elif isinstance(other, Number):
+            result = self.copy()
+            result._H *= other
+            return result
+
+        else:
+            raise NotImplementedError()
+
+    @check_reference_frames
+    def __sub__(self, other):
+        if isinstance(other, Vector):
+            if self._origin == other._origin:
+                new_origin = other._target
+                new_target = self._target
+            elif self._target == other._target:
+                new_origin = self._origin
+                new_target = other._origin
+            else:
+                new_origin = self._origin
+                new_target = ''
+            return Vector(self.homog() - other.homog(), reference_frame=other._reference_frame, origin=new_origin,
+                          target=new_target)
+
+        # elif isinstance(other, Point):
+        #     return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame, target=self._target)
+        #
+        elif isinstance(other, Number):
+            return Vector(self._H - other)
+
+        else:
+            raise NotImplementedError()
+
+    def __div__(self, other):
+        if isinstance(other, Number):
+            new = self.copy()
+            new._H /= other
+            return new
+
+        else:
+            raise NotImplementedError()
+
+    def __mul__(self, other):
+        if isinstance(other, Number):
+            new = self.copy()
+            new._H *= other
+            return new
+
+        else:
+            super(Vector, self).__mul__(other)
+
+    def __neg__(self):
+        return Vector(-self._H, reference_frame=self._reference_frame, origin=self._target, target=self._origin)
+
+    def __array__(self, dtype=float):
+        return self.q().astype(dtype=dtype)
+
+    def trans(self):
+        return self
+
+    def transform(self):
+        homog = np.eye(4)
+        homog[:3, 3] = self.q()
+        return Transform(homog, reference_frame=self._reference_frame, target=self._target)
+
+    def P_bar(self):
+        P_bar = np.eye(6)
+        P_bar[:3, 3:] = se3.skew(self.q())
+        return P_bar
+        
+    def apply_translation(self, other):
+        if isinstance(other, (Point, Vector)):
+            return self + other
+
+        elif isinstance(other, Twist):
+            result = other.copy()
+            result._xi = colvec(self.P_bar().dot(other.xi()))
+            result._reference_frame = self._reference_frame
+            result._reference_point = self._origin
+            return result
+        
+        elif isinstance(other, Transform):
+            trans_vec = other.trans() + self
+            return trans_vec.transform()
+
+        elif isinstance(other, np.ndarray):
+            return self.q() + other
+        
+        else:
+            raise NotImplementedError()
+
+
+class Point(GeometricPrimitive):
+    """ x = Point(...)  point in R^3
+
+        .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
+        .q() - (3,) - cartesian coordinates ndarray
+    """
+
+    cartesian_names = QUATERNION_POSE_NAMES[:3]
+
+    @classmethod
+    def from_cartesian(cls, cartesian):
+        return cls(np.append(cartesian, 1))
+
+    @classmethod
+    def from_vector(cls, vector):
+        return cls.from_cartesian(vector.q())
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
+        return cls.from_cartesian(homog_array)
+
+    def __init__(self, homog_array=None, vectorized=None, reference_frame='', target=''):
+        if vectorized is not None:
+            self._H = np.concatenate((vectorized, np.ones((1,))))
+        elif homog_array is None:
+            self._H = np.zeros(4)
+            self._H[3] = 1
+        else:
+            if homog_array.shape != (4,):
+                raise ValueError('Input ndarray must be (4,)')
+            self._H = homog_array.astype('float64')
+        super(Point, self).__init__(reference_frame, target)
+
+    def q(self):
+        return self._H[0:3]
+
+    def homog(self):
+        return self._H
+
+    def transform(self):
+        homog = np.eye(4)
+        homog[:3, 3] = self.q()
+        return Transform(homog, reference_frame=self._reference_frame, target=self._target)
+    
+    def error(self, other):
+        return la.norm(self.q() - other.q())
+
+    @check_reference_frames
+    def __sub__(self, other):
+        if isinstance(other, Point):
+            return Vector(self.homog() - other.homog(), reference_frame=other._reference_frame, origin=self._target,
+                          target=other._target)
+
+        elif isinstance(other, Vector):
+            if other._target == self._target:
+                new_target = other._origin
+            else:
+                new_target = ''
+            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame, target=new_target)
+
+        elif isinstance(other, Number):
+            new_H = self._H[:]
+            new_H[:3] -= other
+            return Point(new_H + other, reference_frame=self._reference_frame)
+
+        else:
+            raise NotImplementedError()
+
+    @check_reference_frames
+    def __add__(self, other):
+        if isinstance(other, Point):
+            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame)
+
+        elif isinstance(other, Vector):
+            if other._origin == self._target:
+                new_target = other._target
+            else:
+                new_target = ''
+            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame, target=new_target)
+
+        elif isinstance(other, Number):
+            new_H = self._H[:]
+            new_H[:3] += other
+            return Point(new_H + other, reference_frame=self._reference_frame)
+
+        else:
+            raise NotImplementedError()
+
+    def __div__(self, other):
+        if isinstance(other, Number):
+            new = self.copy()
+            new._H[:3] /= other
+            return new
+
+        else:
+            raise NotImplementedError()
+
+    def __mul__(self, other):
+        if isinstance(other, Number):
+            new = self.copy()
+            new._H[:3] /= other
+            return new
+
+        else:
+            super(Point, self).__mul__(other)
+
+    def __array__(self, dtype=float):
+        return self.q().astype(dtype=dtype)
+
+    def norm(self):
+        return la.norm(self.q())
+
+    def vectorize(self):
+        return self._H[:3]
+
+    def to_dict(self):
+        return dict(zip(self.cartesian_names, self.q()))
+
+    def names(self, prefix=''):
+        return [prefix + name for name in self.cartesian_names]
+
+    def vector(self):
+        homog = self._H.copy()
+        homog[3] = 0
+        return Vector(homog, reference_frame=self._reference_frame, origin=self._reference_frame, target=self._target)
 
 
 class Feature(object):
@@ -421,7 +1200,7 @@ class OneDofTwistJoint(ParameterizedJoint):
 class ThreeDofBallJoint(ParameterizedJoint):
     angle_names = ('alpha', 'beta', 'gamma')
 
-    def __init__(self, params, joint_axes=[[1,0,0], [0,1,0], [0,0,1]]):
+    def __init__(self, params, joint_axes=((1,0,0), (0,1,0), (0,0,1))):
         # Columns of joint_axes specify the axes of rotation in the zero config
         self.joint_axes = joint_axes
         super(ThreeDofBallJoint, self).__init__(params, ['joint_axes'])
@@ -436,172 +1215,16 @@ class ThreeDofBallJoint(ParameterizedJoint):
         return np.ones(3)
 
     def twist_dict(self, name):
-        return {'%s_%s' % (name, element): twist for element, twist in zip(self.angle_names, self._twists)}
+        return {'%s_%d' % (name, element): twist for element, twist in enumerate(self._twists)}
 
-
-class Transform(GeometricPrimitive):
-    """
-    g = Transform(...)  element of SE(3)
-
-        .rot() - Rotation object
-        .trans() - Vector object
-        .homog() - (4,4) - homogeneous transformation ndarray
-        .p() - (3,) - translation ndarray
-        .R() - (3,3) - rotation ndarray
-    """
-    conventions = {'quaternion': QUATERNION_POSE_NAMES,
-                   'euler': EULER_POSE_NAMES}
-
-    @classmethod
-    def from_dict(cls, dictionary, convention='euler'):
-        element_names = cls.conventions[convention]
-        assert set(element_names) == set(dictionary)
-        pose = np.array([float(dictionary[pose_name]) for pose_name in element_names])
-        return cls.from_pose_array(pose)
-
-    @classmethod
-    def from_pose_array(cls, pose_array):
-        homog_array = np.identity(4)
-        homog_array[:, 3] = pose_array[:3]
-        homog_array[:3, :3] = quaternion_matrix(pose_array[3:])
-        return cls(homog_array)
-
-    @classmethod
-    def from_p_R(cls, translation_array, rotation_matrix):
-        homog_array = np.identity(4)
-        homog_array[:, 3] = np.array(translation_array).flatten()
-        homog_array[:3, :3] = np.array(rotation_matrix).squeeze()
-        return cls(homog_array)
-
-    def __init__(self, homog_array=None, reference_frame='', target=''):
-        if homog_array is None:
-            self._H = np.identity(4)
-        else:
-            if homog_array.shape != (4,4):
-                raise ValueError('Input ndarray must be (4,4)')
-            self._H = homog_array
-
-        super(Transform, self).__init__(reference_frame, target)
-
-    def target(self):
-        return self._target
-
-    def homog(self):
-        return self._H
-
-    def inv(self):
-        return Transform(homog_array=la.inv(self.homog()), reference_frame=self._target, target=self._reference_frame)
-
-    def trans(self, as_transform=False):
-
-        if as_transform:
-            H = np.identity(4)
-            H[:3, 3] = self._H[0:3, 3]
-            return Transform(H, reference_frame=self._reference_frame, target=self._target)
-
-        else:
-            p = np.append(self._H[0:3,3], 0)
-            return Vector(p, reference_frame=self._reference_frame, target=self._target)
-
-    def rot(self, as_transform=False):
-        if as_transform:
-            return Transform(self.R(True), reference_frame=self._reference_frame, target=self._target)
-
-        else:
-            return Rotation(self._H.copy(), reference_frame=self._reference_frame, target=self._target)
-
-    def p(self):
-        return self._H[0:3,3]
-
-    def R(self, homog=False):
-        if homog:
-            H = self._H.copy()
-            H[:3, 3] = 0
-            return H
-        else:
-            return self._H[0:3,0:3]
-
-    def pose(self, convention='euler'):
-        pose = np.empty(6 + int(convention == 'quaternion'))
-        pose[:3] = self.trans().q()
-        if convention == 'quaternion':
-            pose[3:] = quaternion_from_matrix(self.rot().homog())
-
-        elif convention == 'euler':
-            pose[3:] = euler_from_matrix(self.R())
-
-        else:
-            raise NotImplementedError('Convention %s not yet implemented.' % convention)
-
-        return pose
-
-    def to_dict(self, convention='euler'):
-        return dict(zip(self.conventions[convention], self.pose(convention)))
-
-    def names(self, prefix='', convention='euler'):
-        return [prefix+name for name in self.conventions[convention]]
-
-    def adjoint(self):
-        adj = np.zeros((6,6))
-        adj[:3,:3] = self.R()
-        adj[3:,3:] = self.R()
-        adj[3:,:3] = se3.skew(self.p()).dot(self.R())
-        return adj
-
-    @check_reference_frames
-    def __sub__(self, other):
-        if isinstance(other, Transform):
-            nu = self.trans() - other.trans() # the difference in position in the shared reference frame
-            relative_rotation = self.rot().T() * other.rot() # the relative rotation
-            relative_rotation_vector = relative_rotation.axis_angle() # the axis-angle vector in this one's child frame
-            reference_rotation_vector = self.rot() * relative_rotation_vector # convert it to the shared reference frame
-
-            # return result as a Twist for unit time delta, expressed in the shared reference frame
-            return Twist(omega=reference_rotation_vector, nu=nu.q(), reference_frame=self._reference_frame,
-                         target=self._target)
-
-        else:
-            raise TypeError('Subtraction not supported for %s' % type(other))
-
-    def __div__(self, other):
-        if isinstance(other, Number):
-            new = self.copy()
-            new._H /= other
-            new._H[-1, -1] = 1
-            return new
-
-        elif isinstance(other, Transform):
-            return other.inv() * self
-
-        else:
-            raise NotImplementedError()
-
-    def __array__(self, dtype=float):
-        return self.pose().astype(dtype=dtype)
-
-    def transform(self, primitive):
-        assert isinstance(primitive, GeometricPrimitive), 'Can only transform GeometricPrimitves, you passed %s' \
-                                                          %type(primitive)
-
-        if isinstance(primitive, Twist):
-            return Twist(xi=self.adjoint().dot(primitive.xi()))
-
-        else:
-            return self * primitive
-        
-    
-        
-    def R_bar(self):
-        return self.rot().R_bar()
-    
-    def P_bar(self):
-        return self.trans().P_bar()
+    def xi_dict(self, name):
+        return {'%s_%d' % (name, element): twist.xi() for element, twist in enumerate(self._twists)}
 
 
 class Jacobian(object):
 
     @classmethod
-    def from_array(cls, array, row_names, column_names):
+    def from_array(cls, array, row_names, column_names, kinematic=0, reference_frame='', base_frame='', manip_frame=''):
         """
         Creates a Jacobian from an array and row and column names
         :param numpy.ndarray array: 2D Matrix of the Jacobian
@@ -614,7 +1237,7 @@ class Jacobian(object):
                                                                    "column_names. %s (shape) does not match (%d, %d) " \
                                                                    "(row and column name lengths)" % \
                                                                    (array.shape, len(row_names), len(column_names))
-        jacobian = cls({}, [])
+        jacobian = cls({}, [], [], kinematic, reference_frame, base_frame, manip_frame)
         jacobian._matrix = array
         jacobian._row_names = row_names
         jacobian._column_names = column_names
@@ -641,7 +1264,7 @@ class Jacobian(object):
     def identity(cls, names):
         return cls.from_array(np.identity(len(names)), names, names)
 
-    def __init__(self, columns, row_names=None, column_names=None, reference_frame='', base_frame='', manip_frame=''):
+    def __init__(self, columns, row_names=None, column_names=None, kinematic=0, reference_frame='', base_frame='', manip_frame=''):
         """
         Constructor
         :param dict columns: 
@@ -668,6 +1291,7 @@ class Jacobian(object):
                                                         (len(row_names), len(column))
             self._matrix[:, j] = column
 
+        self._kinematic = kinematic
         self._reference_frame = reference_frame
         self._base_frame = base_frame
         self._manip_frame = manip_frame
@@ -683,7 +1307,7 @@ class Jacobian(object):
         axis = self._row_names if rows else self._column_names
 
         # If the keys do not match
-        if not set(input_dict) == set(axis):
+        if not set(axis).issubset(set(input_dict)):
             new_dict={}
 
             # Loop through each of the dictionary items
@@ -693,7 +1317,6 @@ class Jacobian(object):
                 except AttributeError:
                     raise ValueError('%s was not in %s nor is it a geometric primitive (%s)' %
                                      (prefix, set(axis), type(primitive)))
-
 
             assert set(new_dict) == set(axis), \
                 'dict of gemetric primitives was converted, but their elements %s do not match %s' % \
@@ -771,7 +1394,33 @@ class Jacobian(object):
 
         elif isinstance(other, dict):
             other = self.vectorize(other, rows=False)
+            if self._kinematic > 0:
+                out_vel = self.dot(other).squeeze()
+                if len(out_vel) == 3:
+                    return Vector(np.append(out_vel, 0), reference_frame=self._reference_frame,
+                                  origin=self._base_frame, target=self._manip_frame)
+
+                elif len(out_vel) == 6:
+                    return Twist(xi=out_vel, reference_frame=self._reference_frame, target=self._manip_frame)
+
+                else:
+                    raise ValueError('Had a forward kinematic jacobian but did not produce a 3 or 6 vector.')
+
             return dict(zip(self.row_names(), self.dot(other)))
+
+        elif isinstance(other, Twist):
+            if not self._kinematic < 0:
+                warnings.warn(Warning('Multiplying non-inverse-kinematic jacobian with a twist. Kinematics: %d'
+                                      % self._kinematic))
+
+            return dict(zip(self._row_names, self.dot(other.xi())))
+
+        elif isinstance(other, Vector):
+            if not self._kinematic < 0:
+                warnings.warn(Warning('Multiplying non-inverse-kinematic jacobian with a vector. Kinematics: %d'
+                                      % self._kinematic))
+
+            return dict(zip(self._row_names, self.dot(other.q())))
 
         elif isinstance(other, np.ndarray):
             return self.dot(other)
@@ -827,6 +1476,11 @@ class Jacobian(object):
         else:
             raise NotImplementedError("Subtraction is not yet implemented for %s." % type(other))
 
+    def __neg__(self):
+        result = self.copy()
+        result._matrix = -self._matrix
+        return result
+
     def row_names(self):
         return self._row_names
 
@@ -875,8 +1529,12 @@ class Jacobian(object):
         return new_jac
 
     def pinv(self):
-        pinv_array = la.pinv(self._matrix)
-        return InverseJacobian.from_array(pinv_array, self._column_names, self._row_names)
+        result = self.copy()
+        result._matrix = la.pinv(self._matrix)
+        result._row_names = self._column_names
+        result._column_names = self._row_names
+        result._kinematic = -self._kinematic
+        return result
 
     def append_horizontally(self, other, *args):
         """
@@ -889,10 +1547,11 @@ class Jacobian(object):
             return self.copy()
 
         assert set(self._row_names) == set(other._row_names), "Jacobians must have the same row names!"
-        new_one = other.copy()
-        new_one.reorder(row_names=self._row_names)
-        new_one._matrix = np.hstack((self._matrix, new_one._matrix))
-        new_one._column_names = self._column_names + new_one._column_names
+        new_one = self.copy()
+        other = other.copy()
+        other.reorder(row_names=self._row_names)
+        new_one._matrix = np.hstack((self._matrix, other._matrix))
+        new_one._column_names = self._column_names + other._column_names
 
         if len(args) == 0:
             return new_one
@@ -911,8 +1570,9 @@ class Jacobian(object):
             return self.copy()
 
         assert set(self._column_names) == set(other._column_names), "Jacobians must have the same column names!"
-        new_one = other.copy()
-        new_one.reorder(column_names=self._column_names)
+        new_one = self.copy()
+        other = other.copy()
+        other.reorder(column_names=self._column_names)
         new_one._matrix = np.vstack((self._matrix, new_one._matrix))
         new_one._row_names = self._row_names + new_one._row_names
 
@@ -942,529 +1602,27 @@ class Jacobian(object):
     def __repr__(self):
         return self.__str__()
 
+    def column_dict(self):
+        return dict(zip(self._column_names, self._matrix.T))
 
-class InverseJacobian(Jacobian):
-    pass
+    def row_dict(self):
+        return dict(zip(self._row_names, self._matrix))
 
-    def pinv(self):
-        pinv_array = la.pinv(self._matrix)
-        return Jacobian.from_array(pinv_array, self._column_names, self._row_names)
-
-
-class Twist(GeometricPrimitive):
-    """ xi = Twist(...)  element of se(3)
-
-        .xi() - 6 x 1 - twist coordinates ndarray (om, v)
-        .omega() - 3 x 1 - rotation axis ndarray
-        .nu() - 3 x 1 - translation direction ndarray
-        .exp(theta) - Transform object
-
-        ._xi - 6 x 1 - twist coordinates (om, v)
-    """
-
-    twist_names = EULER_POSE_NAMES
-
-    @classmethod
-    def from_dict(cls, dictionary):
-        new_dict = {key[-1]: value for key, value in dictionary.items()}
-        xi = np.array([new_dict[key] for key in EULER_POSE_NAMES])
-        return cls(xi=xi)
-
-    def __init__(self, omega=None, nu=None, copy=None, vectorized=None, xi=None, reference_frame='', target='',
-                 observation_frame=None, reference_point=None):
-        if xi is not None:
-            self._xi = xi.squeeze()[:, None].astype('float64')
-            assert self._xi.shape == (6,1)
-        elif copy is not None:
-            self._xi = copy.xi().copy()
-        elif omega is not None and nu is not None:
-            omega = np.asarray(omega, dtype='float64')
-            nu = np.asarray(nu, dtype='float64')
-            omega = np.reshape(omega, (3,1))
-            nu = np.reshape(nu, (3,1))
-            assert omega.shape == (3,1) and nu.shape == (3,1)
-            # TODO: Swapped so nu was on top, does this break anything???
-            self._xi = np.vstack((nu, omega))
-        elif vectorized is not None:
-            self._xi = np.asarray(vectorized, dtype='float64')
-        else:
-            raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
-
-        super(Twist, self).__init__(reference_frame, target)
-        self._observation_frame = reference_frame if observation_frame is None else observation_frame
-        self._reference_point = target if reference_point is None else reference_point
-
-    def target(self):
-        return self._target
-
-    def observation_frame(self):
-        return self._observation_frame
-
-    def reference_point(self):
-        return self._reference_point
-
-    def __repr__(self):
-        output = self.__class__.__name__ + ": " + str(self.xi().squeeze())
-        return output
-
-    def xi(self):
-        return self._xi
-
-    def omega(self):
-        return self._xi.squeeze()[:3]
-
-    def nu(self):
-        return self._xi.squeeze()[3:]
-
-    def exp(self, theta):
-        return Transform(homog_array=se3.expse3(self._xi, theta), reference_frame=self._reference_frame,
-                         target=self._reference_point)
-
-    def vectorize(self):
-        return np.array(self._xi).squeeze()
-
-    def normalize(self):
-        norm_constant = la.norm(self.omega())
-        self._xi = self._xi / norm_constant
-        return norm_constant
-
-    def homog(self):
-        # Get the skew-symmetric, (4,4) matrix form of the twist
-        return se3.hat_(self._xi)
-
-    def _json(self):
-        return self._xi.squeeze().tolist()
-
-    def to_dict(self, prefix=''):
-        return {prefix+key: value for key, value in zip(self.twist_names, self._xi)}
-
-    def names(self, prefix=''):
-        return [prefix + name for name in self.twist_names]
-
-    def __array__(self, dtype=float):
-        return self._xi.squeeze().astype(dtype=dtype)
-
-    def _check_compat(self, other):
-        """
-
-        :param Twist other:
-        :return:
-        """
-        if self._reference_frame != other._reference_frame:
-            warnings.warn(ReferenceFrameWarning(self._reference_frame, other._reference_frame))
-        if self._reference_point != other._reference_point:
-            warnings.warn(Warning('Body frames of twists differ when performing addition/subtraction. %s vs %s' %
-                                  (self._reference_point, other._reference_point)))
-
-    def __mul__(self, other):
-        if isinstance(other, Number):
+    def position_only(self):
+        if self._kinematic > 0:
             result = self.copy()
-            result._xi *= other
+            result._matrix = self._matrix[:3, :]
+            result._row_names = self._row_names[:3]
             return result
 
-    def __div__(self, other):
-        if isinstance(other, Number):
+        elif self._kinematic < 0:
             result = self.copy()
-            result._xi /= other
-            return result
-
-    def __add__(self, other):
-        if isinstance(other, Twist):
-            self._check_compat(other)
-            if self._target == other._observation_frame:
-                new_target = other._target
-                new_observation_frame = self._observation_frame
-
-            elif self._observation_frame == other_target:
-                new_target = self._target
-                new_observation_frame = other._observation_frame
-
-            else:
-                warnings.warn(Warning('Performing an addition of twists that does not result in a relative velocity.\n'
-                                      'Body frame: %s, %s'
-                                      'Observation frames: %s, %s'
-                                      % (self._target, other._target,
-                                         self._observation_frame, other._observation_frame)))
-                new_target = ''
-                new_observation_frame = ''
-
-            return Twist(xi=self._xi + other._xi, reference_frame=self._reference_frame,
-                         reference_point=self._reference_point, target=new_target,
-                         observation_frame=new_observation_frame)
-
-    def __sub__(self, other):
-        if isinstance(other, Twist):
-            self._check_compat(other)
-            if self._observation_frame != other._observation_frame:
-                warnings.warn(Warning('Performing subtraction of twists with differing observation frames. %s vs %s'
-                                      % (self._observation_frame, other._observation_frame)))
-                return Twist(xi=self._xi - other._xi, reference_frame=self._reference_frame,
-                             reference_point=self._reference_point)
-
-            return Twist(xi=self._xi - other._xi, reference_frame=self._reference_frame,
-                         reference_point=self._reference_point, observation_frame=other._target,
-                         target=self._target)
-
-    @check_reference_frames
-    def rotate(self, rot):
-        """
-
-        :param Rotation rot:
-        :return:
-        """
-        return rot * self
-
-    @check_reference_frames
-    def set_reference_point(self, vec):
-        """
-
-        :param Vector vec:
-        :return:
-        """
-        if vec._origin == self._reference_point:
-            vec = -vec
-        if vec._target != self._reference_point:
-            warnings.warn('You should change the reference point with a vector that originates at the new reference '
-                          'point and targets the old reference point (%s).\n'
-                          'You provided %s -> %s' % (self._reference_point, vec._origin, vec._target))
-
-        result = self.copy()
-        result._xi = vec.P_bar() * self._xi
-        result._reference_point = vec._origin
-        return result
-
-
-class Rotation(GeometricPrimitive):
-    """ R = Rotation(...)  element of SO(3)
-
-        .R() - (3,3) - rotation matrix ndarray
-        .homog() - (4,4) - homogeneous coordinates ndarray (for a pure rotation)
-    """
-
-    quaternion_names = QUATERNION_POSE_NAMES[3:]
-
-    @classmethod
-    def from_dict(cls, dictionary):
-        quaternion = np.array([dictionary[quaternion_name] for quaternion_name in cls.quaternion_names])
-        return cls.from_quaternion(quaternion)
-
-    @classmethod
-    def from_quaternion(cls, quaternion):
-        homog_array = np.identity(4)
-        homog_array[:3, :3] = quaternion_matrix(quaternion)
-        return cls(homog_array)
-
-    def __init__(self, homog_array=None, reference_frame='', target=''):
-        if homog_array is None:
-            self._R = np.identity(3)
-        else:
-            if homog_array.shape != (4,4):
-                raise ValueError('Input ndarray must be (4,4)')
-            self._R = homog_array[0:3,0:3].astype('float64')
-
-        super(Rotation, self).__init__(reference_frame, target)
-        
-
-    def target(self):
-        return self._target
-
-    def R(self):
-        return self._R
-
-    def homog(self):
-        homog_matrix = np.identity(4)
-        homog_matrix[0:3,0:3] = self._R
-        return homog_matrix
-
-    def quaternion(self):
-        return quaternion_from_matrix(self.R())
-
-    def axis_angle(self):
-        u = np.array([self._R[2, 1] - self._R[1, 2],
-                      self._R[0, 2] - self._R[2, 0],
-                      self._R[1, 0] - self._R[0, 1]])
-        return u
-
-    def to_dict(self):
-        return dict(zip(self.quaternion_names, self.quaternion()))
-
-    def names(self, prefix=''):
-        return [prefix + name for name in self.quaternion_names]
-
-    def __mul__(self, other):
-        if isinstance(other, Rotation):
-            result = self.copy()
-            result._R = self._R.dot(other._R)
-            return result
-        
-        elif isinstance(other, Twist):
-            result = other.copy()
-            result._xi = self.R_bar() * other.xi()
-            result._reference_frame = self._reference_frame
-            return result
-
-        elif isinstance(other, np.ndarray):
-            return self._R.dot(other)
-
-    def __div__(self, other):
-        if isinstance(other, float):
-            new = self.copy()
-            new._R /= other
-            return new
-
-        else:
-            raise NotImplementedError()
-
-    def __array__(self, dtype=float):
-        return self.quaternion().astype(dtype=dtype)
-
-    def T(self, child_frame_name=''):
-        result = self.copy()
-        result._R = result._R.T
-        result._reference_frame = child_frame_name
-        return result
-
-    def transform(self):
-        homog = np.eye(4)
-        homog[:3, :3] = self._R
-        return Transform(homog, reference_frame=self._reference_frame, target=self._target)
-
-    def R_bar(self):
-        return block_diag([self._R, self._R])
-
-
-class Vector(GeometricPrimitive):
-    """ x = Vector(...)  translation in R^3
-
-        .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
-        .q() - (3,) - cartesian coordinates ndarray
-    """
-
-    cartesian_names = QUATERNION_POSE_NAMES[:3]
-
-    @classmethod
-    def from_cartesian(cls, cartesian):
-        return cls(np.append(cartesian, 0))
-
-    @classmethod
-    def from_point(cls, point):
-        return cls.from_cartesian(point.q())
-
-    @classmethod
-    def from_dict(cls, dictionary):
-        homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
-        return cls(homog_array)
-
-    def __init__(self, homog_array=None, reference_frame='', origin='', target=''):
-        if homog_array is None:
-            self._H = np.zeros(4)
-        else:
-            if homog_array.shape != (4,):
-                raise ValueError('Input ndarray must be (4,)')
-            self._H = homog_array.astype('float64')
-
-        super(Vector, self).__init__(reference_frame, target)
-        self._origin = origin
-
-    def origin(self):
-        return self._origin
-        
-    def target(self):
-        return self._target
-
-    def q(self):
-        return self._H[0:3]
-
-    def homog(self):
-        return self._H
-
-    def norm(self):
-        return la.norm(self.q())
-
-    def to_dict(self):
-        return dict(zip(self.cartesian_names, self.q()))
-
-    def names(self, prefix=''):
-        return [prefix + name for name in self.cartesian_names]
-
-    @check_reference_frames
-    def __add__(self, other):
-
-        if isinstance(other, Vector):
-            if self._origin == other._target:
-                new_origin = other._origin
-                new_target = self._target
-            elif self._target == other._origin:
-                new_origin = self._origin
-                new_target = other._target
-            else:
-                new_origin=self._origin
-                new_target = ''
-            return Vector(self.homog() + other.homog(), reference_frame=other._reference_frame, origin=new_origin,
-                          target=new_target)
-
-        elif isinstance(other, Point):
-            return Point(self.homog() + other.homog(), reference_frame=other._reference_frame, target=self._target)
-
-        elif isinstance(other, Number):
-            result = self.copy()
-            result._H *= other
+            result._matrix = self._matrix[:, :3]
+            result._column_names = self._column_names[:3]
             return result
 
         else:
-            raise NotImplementedError()
-
-    @check_reference_frames
-    def __sub__(self, other):
-        if isinstance(other, Vector):
-            if self._origin == other._origin:
-                new_origin = other._target
-                new_target = self._target
-            elif self._target == other._target:
-                new_origin = self._origin
-                new_target = other._origin
-            else:
-                new_origin=self._origin
-                new_target = ''
-            return Vector(self.homog() - other.homog(), reference_frame=other._reference_frame, origin=new_origin,
-                          target=new_target)
-
-        # elif isinstance(other, Point):
-        #     return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame, target=self._target)
-        #
-        elif isinstance(other, Number):
-            return Vector(self._H - other)
-
-        else:
-            raise NotImplementedError()
-
-    def __div__(self, other):
-        if isinstance(other, float):
-            new = self.copy()
-            new._H /= other
-            return new
-
-        else:
-            raise NotImplementedError()
-
-    def __neg__(self):
-        return Vector(-self._H, reference_frame=self._reference_frame, origin=self._target, target=self._origin)
-
-    def __array__(self, dtype=float):
-        return self.q().astype(dtype=dtype)
-    
-    def P_bar(self):
-        P_bar = np.eye(6)
-        P_bar[:3, 3:] = se3.skew(self.q())
-
-
-class Point(GeometricPrimitive):
-    """ x = Point(...)  point in R^3
-
-        .homog() - (4,) - homogeneous coordinates ndarray (x, 0)
-        .q() - (3,) - cartesian coordinates ndarray
-    """
-
-    cartesian_names = QUATERNION_POSE_NAMES[:3]
-
-    @classmethod
-    def from_cartesian(cls, cartesian):
-        return cls(np.append(cartesian, 1))
-
-    @classmethod
-    def from_vector(cls, vector):
-        return cls.from_cartesian(vector.q())
-
-    @classmethod
-    def from_dict(cls, dictionary):
-        homog_array = np.array([dictionary[cartesian_name] for cartesian_name in cls.cartesian_names])
-        return cls.from_cartesian(homog_array)
-
-    def __init__(self, homog_array=None, vectorized=None, reference_frame='', target=''):
-        if vectorized is not None:
-            self._H = np.concatenate((vectorized, np.ones((1,))))
-        elif homog_array is None:
-            self._H = np.zeros(4)
-            self._H[3] = 1
-        else:
-            if homog_array.shape != (4,):
-                raise ValueError('Input ndarray must be (4,)')
-            self._H = homog_array.astype('float64')
-        super(Point, self).__init__(reference_frame, target)
-
-    def q(self):
-        return self._H[0:3]
-
-    def homog(self):
-        return self._H
-
-    def error(self, other):
-        return la.norm(self.q() - other.q())
-
-    @check_reference_frames
-    def __sub__(self, other):
-        if isinstance(other, Point):
-            return Vector(self.homog() - other.homog(), reference_frame=other._reference_frame, origin=self._target,
-                          target=other._target)
-
-        elif isinstance(other, Vector):
-            if other._target == self._target:
-                new_target = other._origin
-            else:
-                new_target = ''
-            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame, target=new_target)
-
-        elif isinstance(other, Number):
-            new_H = self._H[:]
-            new_H[:3] -= other
-            return Point(new_H + other, reference_frame=self._reference_frame)
-
-        else:
-            raise NotImplementedError()
-
-    @check_reference_frames
-    def __add__(self, other):
-        if isinstance(other, Point):
-            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame)
-
-        elif isinstance(other, Vector):
-            if other._origin == self._target:
-                new_target = other._target
-            else:
-                new_target = ''
-            return Point(np.append(self.q() - other.q(), 1), reference_frame=other._reference_frame, target=new_target)
-
-        elif isinstance(other, Number):
-            new_H = self._H[:]
-            new_H[:3] += other
-            return Point(new_H + other, reference_frame=self._reference_frame)
-
-        else:
-            raise NotImplementedError()
-
-    def __div__(self, other):
-        if isinstance(other, float):
-            new = self.copy()
-            new._H[:3] /= other
-            return new
-
-        else:
-            raise NotImplementedError()
-
-    def __array__(self, dtype=float):
-        return self.q().astype(dtype=dtype)
-
-    def norm(self):
-        return la.norm(self.q())
-
-    def vectorize(self):
-        return self._H[:3]
-
-    def to_dict(self):
-        return dict(zip(self.cartesian_names, self.q()))
-
-    def names(self, prefix=''):
-        return [prefix + name for name in self.cartesian_names]
+            raise ValueError('Cannot perform position_only on a non-kinematic Jacobian')
 
 
 def ascii_encode(data):
