@@ -563,10 +563,11 @@ class FrameTracker(object):
 
 class KinematicTreeExternalFrameTracker(FrameTracker):
 
-    def __init__(self, kin_tree, base_tf_frame_name=None, convention='quaternion'):
+    def __init__(self, kin_tree, base_tf_frame_name=None, convention='quaternion', base_frame_name='base'):
         self._kin_tree = kin_tree
         self._joint_names = self._kin_tree.get_joints().keys()
         self._joint_names.remove(self._kin_tree.get_root_joint().name)
+        self._root_name = base_frame_name
 
         super(KinematicTreeExternalFrameTracker, self).__init__(base_tf_frame_name, convention)
 
@@ -634,6 +635,7 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
             self._joint_names.insert(idx+i, '%s_%d' % (joint_name, i))
 
     def unsplit(self, joint_dict):
+        joint_dict = joint_dict.copy()
         for split_joint in self.split_joints:
             split_joint_vals = [None]*3
             for joint_name, joint_val in joint_dict.items():
@@ -677,7 +679,7 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
         row_names = [manip_name_frame + '_' + element for element in kinmodel.EULER_POSE_NAMES]
         minimial_jacobian = kinmodel.Jacobian(self._kin_tree.compute_jacobian(base_frame_name, manip_name_frame),
                                               row_names, kinematic=1, reference_frame=base_frame_name,
-                                              manip_frame=manip_name_frame)
+                                              base_frame=base_frame_name, manip_frame=manip_name_frame)
         return minimial_jacobian.pad(column_names=self._joint_names).reorder(column_names=self._joint_names)
 
     def _update(self):

@@ -6,18 +6,17 @@ import numpy.linalg as la
 import numpy.random as nprand
 import scipy.optimize
 from scipy.linalg import block_diag
-import se3
+from . import se3
 from math import pi, log10, sqrt
 import json
 import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from phasespace.mocap_definitions import MocapWrist
 from tf.transformations import euler_matrix, quaternion_matrix, quaternion_from_matrix, euler_from_matrix, unit_vector
 from copy import deepcopy
 from numbers import Number
 import warnings
-from tools import colvec
+from .tools import colvec
 
 
 class abstractclassmethod(classmethod):
@@ -184,7 +183,7 @@ class GeometricPrimitive(object):
         return Transform()
 
     def __mul__(self, other):
-        if isinstance(other, GeometricPrimitive):
+        if isinstance(other, (GeometricPrimitive, Jacobian)):
             transform = self.transform()
 
             return transform.apply_transform(other)
@@ -349,24 +348,36 @@ class Transform(GeometricPrimitive):
     def __array__(self, dtype=float):
         return self.pose().astype(dtype=dtype)
 
-    def apply_transform(self, primitive):
-        assert isinstance(primitive, GeometricPrimitive), 'Can only transform GeometricPrimitves, you passed %s' \
-                                                          % type(primitive)
+    def apply_transform(self, other):
+        assert isinstance(other, (GeometricPrimitive, Jacobian)), 'Can only transform GeometricPrimitves or ' \
+                                                                      'Jacobians, you passed %s' % type(other)
 
-        result = primitive.copy()
+        result = other.copy()
 
-        if self._target != primitive.reference_frame():
+        if self._target != other.reference_frame():
             warnings.warn(Warning('Attempting to apply transform from %s to %s on primitive whose reference frame is %s'
-                                  % (self._target, self._reference_frame, primitive.reference_frame())))
+                                  % (self._target, self._reference_frame, other.reference_frame())))
 
-        if isinstance(primitive, Twist):
-            result._xi = colvec(self.adjoint().dot(primitive._xi))
+        if isinstance(other, Jacobian):
+            if other._kinematic == 0:
+                raise ValueError('Non kinematic Jacobian passed')
 
-        elif isinstance(primitive, Rotation):
-            result._R = self.R().dot(primitive.R())
+            left = other._kinematic > 0
+            if len(other._matrix) == 3:
+                R = self.R()
+            elif len(other._matrix) == 6:
+                R = self.rot().R_bar()
+
+            result.in_place_dot(R, left=left)
+
+        elif isinstance(other, Twist):
+            result._xi = colvec(self.adjoint().dot(other._xi))
+
+        elif isinstance(other, Rotation):
+            result._R = self.R().dot(other.R())
 
         else:
-            result._H = self._H.dot(primitive._H)
+            result._H = self._H.dot(other._H)
 
         result._reference_frame = self._reference_frame
         return result
@@ -449,6 +460,10 @@ class Twist(GeometricPrimitive):
 
     def nu(self):
         return self._xi.squeeze()[3:]
+
+    def trans(self):
+        return Vector(np.append(self.nu(), 0), reference_frame=self._reference_frame, origin=self._observation_frame,
+                      target=self._reference_point)
 
     def exp(self, theta):
         return Transform(homog_array=se3.expse3(self._xi, theta), reference_frame=self._reference_frame,
@@ -983,7 +998,7 @@ class Point(GeometricPrimitive):
     def names(self, prefix=''):
         return [prefix + name for name in self.cartesian_names]
 
-    def vector(self):
+    def trans(self):
         homog = self._H.copy()
         homog[3] = 0
         return Vector(homog, reference_frame=self._reference_frame, origin=self._reference_frame, target=self._target)
@@ -1296,6 +1311,9 @@ class Jacobian(object):
         self._base_frame = base_frame
         self._manip_frame = manip_frame
 
+    def reference_frame(self):
+        return self._reference_frame
+
     def vectorize(self, input_dict, rows):
         """
         Takes a dictionary and produces a vector ordered according to the rows/columns of the Jacobian
@@ -1379,6 +1397,10 @@ class Jacobian(object):
             self._matrix = self._matrix.dot(array)
         else:
             self._matrix = array.dot(self._matrix)
+
+    def __array__(self, dtype=float):
+        return self.J().astype(dtype=dtype)
+
 
     def __mul__(self, other):
         if isinstance(other, Jacobian):
@@ -1573,8 +1595,8 @@ class Jacobian(object):
         new_one = self.copy()
         other = other.copy()
         other.reorder(column_names=self._column_names)
-        new_one._matrix = np.vstack((self._matrix, new_one._matrix))
-        new_one._row_names = self._row_names + new_one._row_names
+        new_one._matrix = np.vstack((self._matrix, other._matrix))
+        new_one._row_names = self._row_names + other._row_names
 
         if len(args) == 0:
             return new_one
@@ -1623,6 +1645,15 @@ class Jacobian(object):
 
         else:
             raise ValueError('Cannot perform position_only on a non-kinematic Jacobian')
+
+    def __len__(self):
+        return self.length()
+
+    def length(self):
+        return self._matrix.shape[0]
+
+    def width(self):
+        return self._matrix.shape[1]
 
 
 def ascii_encode(data):
