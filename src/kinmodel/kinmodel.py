@@ -287,6 +287,9 @@ class Transform(GeometricPrimitive):
     def p(self):
         return self._H[0:3, 3]
 
+    def point(self):
+        return self._H[:, 3]
+
     def R(self, homog=False):
         if homog:
             H = self._H.copy()
@@ -456,10 +459,10 @@ class Twist(GeometricPrimitive):
         return self._xi
 
     def omega(self):
-        return self._xi.squeeze()[:3]
+        return self._xi.squeeze()[3:]
 
     def nu(self):
-        return self._xi.squeeze()[3:]
+        return self._xi.squeeze()[:3]
 
     def trans(self):
         return Vector(np.append(self.nu(), 0), reference_frame=self._reference_frame, origin=self._observation_frame,
@@ -518,6 +521,9 @@ class Twist(GeometricPrimitive):
         else:
             return super(Twist, self).__mul__(other)
 
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
     def __div__(self, other):
         if isinstance(other, Number):
             result = self.copy()
@@ -527,11 +533,16 @@ class Twist(GeometricPrimitive):
     def __add__(self, other):
         if isinstance(other, Twist):
             self._check_compat(other)
-            if self._target == other._observation_frame:
+            if self._target == other._target and self._observation_frame == other._observation_frame:
+                return Twist(xi=self._xi+other._xi, reference_frame=self._reference_frame,
+                             reference_point=self._reference_point, target=self._target,
+                             observation_frame=self._observation_frame)
+
+            elif self._target == other._observation_frame:
                 new_target = other._target
                 new_observation_frame = self._observation_frame
 
-            elif self._observation_frame == other_target:
+            elif self._observation_frame == other._target:
                 new_target = self._target
                 new_observation_frame = other._observation_frame
 
@@ -567,6 +578,15 @@ class Twist(GeometricPrimitive):
         result._observation_frame = self._reference_frame
         result._reference_frame = self._observation_frame
         return result
+
+    def __gt__(self, other):
+        return np.linalg.norm(self._xi) > other
+
+    def __lt__(self, other):
+        return np.linalg.norm(self._xi) < other
+
+    def __abs__(self):
+        return np.linalg.norm(self._xi)
 
     @check_reference_frames
     def rotate(self, rot):
@@ -1069,6 +1089,24 @@ class Joint(object):
                 pass
         return json_dict
 
+    def to_1d_chain(self, indexing=(1, 2, 3), recursive=False):
+        if isinstance(self.twist, ThreeDofBallJoint):
+            children = self.children[:]
+            if recursive:
+                children = [child.to_1d_chain(indexing, recursive) if isinstance(child, Joint) else child
+                            for child in children]
+            twists = self.twist.to_1d_list()
+            indexing = list(indexing)
+            current = None
+            while len(twists) > 0:
+                current = Joint('%s_%s' % (self.name, str(indexing.pop())), children, twists.pop())
+                children = [current]
+
+            return current
+
+        else:
+            return self
+
 
 class ParameterizedJoint(object):
     """Base class for a joint with one or more degrees of freedom, parameterized by one or more
@@ -1083,13 +1121,13 @@ class ParameterizedJoint(object):
     """
     __metaclass__ = ABCMeta
 
-    def __init__(self, params, static_param_attribs=[]):
+    def __init__(self, params, static_param_attribs=()):
         params = np.atleast_1d(np.asarray(params).squeeze())
         if params.ndim > 1:
             raise ValueError('params must be a 1D array-like')
         self._twists = None
         self.params = params
-        self._static_params = static_param_attribs
+        self._static_params = list(static_param_attribs)
 
         # Let _set_params() populate the self._twists list
         self._set_params(params)
@@ -1209,7 +1247,7 @@ class OneDofTwistJoint(ParameterizedJoint):
         return {name: self.twist()}
 
     def xi_dict(self, name):
-            return {name: self.twist().xi()}
+            return OrderedDict(((name, self.twist().xi()),))
 
 
 class ThreeDofBallJoint(ParameterizedJoint):
@@ -1233,7 +1271,10 @@ class ThreeDofBallJoint(ParameterizedJoint):
         return {'%s_%d' % (name, element): twist for element, twist in enumerate(self._twists)}
 
     def xi_dict(self, name):
-        return {'%s_%d' % (name, element): twist.xi() for element, twist in enumerate(self._twists)}
+        return OrderedDict(('%s_%d' % (name, element), twist.xi()) for element, twist in enumerate(self._twists))
+
+    def to_1d_list(self):
+        return [OneDofTwistJoint([twist.copy()]) for twist in self._twists]
 
 
 class Jacobian(object):
@@ -1504,10 +1545,10 @@ class Jacobian(object):
         return result
 
     def row_names(self):
-        return self._row_names
+        return self._row_names[:]
 
     def column_names(self):
-        return self._column_names
+        return self._column_names[:]
 
     def J(self):
         return self._matrix.copy()
@@ -1717,14 +1758,7 @@ class KinematicTree(object):
         feature_obs = self.observe_features()
         return feature_obs[base_frame_name].inv() * feature_obs[target_frame_name]
 
-    def compute_jacobian(self, base_frame_name, manip_frame_name):
-        # Compute the base to manip transform
-        self._compute_pox()
-        self._compute_dpox()
-        feature_obs = self.observe_features()
-        base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name]
-        root_base_transform = feature_obs[base_frame_name]
-
+    def get_twist_chain(self, base_frame_name, manip_frame_name):
         # Get all the joints that connect the two frames along the shortest path
         incoming_joints = self.get_chain(base_frame_name)
         outgoing_joints = self.get_chain(manip_frame_name)
@@ -1735,13 +1769,13 @@ class KinematicTree(object):
 
         # Collect all the twists for each chain
         all_joints = self.get_joints()
-        incoming_twists = {}
-        for i, joint_name in enumerate(incoming_joints):
+        incoming_twists = OrderedDict()
+        for i, joint_name in enumerate(reversed(incoming_joints)):
             try:
                 incoming_twists.update(all_joints[joint_name].twist.xi_dict(joint_name))
             except AttributeError:
                 pass # Stationary joint - doesn't have a twist
-        outgoing_twists = {}
+        outgoing_twists = OrderedDict()
         for i, joint_name in enumerate(outgoing_joints):
             try:
                 outgoing_twists.update(all_joints[joint_name].twist.xi_dict(joint_name))
@@ -1752,7 +1786,19 @@ class KinematicTree(object):
         for joint in incoming_twists:
             incoming_twists[joint] = -1.0 * incoming_twists[joint]
 
+        return incoming_twists, outgoing_twists
+
+    def compute_jacobian(self, base_frame_name, manip_frame_name):
+        # Compute the base to manip transform
+        self._compute_pox()
+        self._compute_dpox()
+        feature_obs = self.observe_features()
+        base_manip_transform = feature_obs[base_frame_name].inv() * feature_obs[manip_frame_name]
+        root_base_transform = feature_obs[base_frame_name]
+
         # Transform all the twists into the base frame
+        incoming_twists, outgoing_twists = self.get_twist_chain(base_frame_name, manip_frame_name)
+
         outgoing_twists.update(incoming_twists)
         all_twists = outgoing_twists
         root_base_inv_adjoint = root_base_transform.inv().adjoint()
@@ -1784,6 +1830,20 @@ class KinematicTree(object):
                     raise ValueError('Config dict is missing an entry for joint: ' + root.name)
             for child_joint in root.children:
                 self.set_config(config, root=child_joint, error_on_missing=error_on_missing)
+
+    def set_zero_config(self, root=None, error_on_missing=True):
+        self._pox_stale = True
+        self._dpox_stale = True
+        if root is None:
+            root = self._root
+        if hasattr(root, 'children'):
+            try:
+                root._theta = 0.0
+            except KeyError:
+                if root.twist is not None and error_on_missing:
+                    raise ValueError('Config dict is missing an entry for joint: ' + root.name)
+            for child_joint in root.children:
+                self.set_zero_config(root=child_joint, error_on_missing=error_on_missing)
 
     def get_config(self, root=None, config=None):
         if root is None:
@@ -2035,6 +2095,20 @@ class KinematicTree(object):
 
     def copy(self):
         return deepcopy(self)
+
+    def to_1d_chain(self, indexing=(0, 1, 2)):
+        return KinematicTree(root=deepcopy(self._root).to_1d_chain(indexing, recursive=True))
+
+    def to_single_chain(self, root_frame_name, end_joint):
+        new = self.to_1d_chain()
+        new.set_zero_config()
+        new._compute_pox()
+        features = new.observe_features()
+        new_root_chain = new.get_chain(root_frame_name)
+        old_to_new_root_transform = features[root_frame_name].inv()
+        old_to_new_root_transform_adj = old_to_new_root_transform.adj()
+
+        new_root = Joint('base')
 
 
 class KinematicTreeParamVectorizer(object):

@@ -223,7 +223,7 @@ class MocapUkfTracker(MocapTracker):
                                                    self.state_space_model.measurement_model,
                                                    x0=np.zeros(self.state_space_model.state_length()),
                                                    P0=np.identity(self.state_space_model.state_length()) * 0.25,
-                                                   Q=np.pi / 2 / 80, R=5e-3)
+                                                   Q=np.pi / 2 / 80, R=1e-2)
         self._initialized = False
 
     def _unvectorize_estimation(self, state_vector=None):
@@ -826,6 +826,9 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
             jacobian_dict = {base_frame_name + '_' + manip_frame_name + '_jacobian':jacobian}
             return jacobian_dict
         return obs_func
+
+    def kin_tree(self):
+        return self._kin_tree
 
 
 def extract_marker_subset(frame_data, names, marker_indices):
