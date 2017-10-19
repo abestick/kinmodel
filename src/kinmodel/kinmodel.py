@@ -436,7 +436,7 @@ class Twist(GeometricPrimitive):
         elif vectorized is not None:
             self._xi = np.asarray(vectorized, dtype='float64')
         else:
-            raise TypeError('You must provide either the initial twist coordinates or another Twist to copy')
+            self._xi = np.zeros((6, 1)).astype('float64')
 
         super(Twist, self).__init__(reference_frame, target)
         self._observation_frame = reference_frame if observation_frame is None else observation_frame
@@ -1090,11 +1090,12 @@ class Joint(object):
         return json_dict
 
     def to_1d_chain(self, indexing=(1, 2, 3), recursive=False):
+        children = self.children[:]
+        if recursive:
+            children = [child.to_1d_chain(indexing, recursive) if isinstance(child, Joint) else child
+                        for child in children]
+
         if isinstance(self.twist, ThreeDofBallJoint):
-            children = self.children[:]
-            if recursive:
-                children = [child.to_1d_chain(indexing, recursive) if isinstance(child, Joint) else child
-                            for child in children]
             twists = self.twist.to_1d_list()
             indexing = list(indexing)
             current = None
@@ -1105,7 +1106,7 @@ class Joint(object):
             return current
 
         else:
-            return self
+            return Joint(self.name, children, self.twist)
 
 
 class ParameterizedJoint(object):
@@ -1274,7 +1275,7 @@ class ThreeDofBallJoint(ParameterizedJoint):
         return OrderedDict(('%s_%d' % (name, element), twist.xi()) for element, twist in enumerate(self._twists))
 
     def to_1d_list(self):
-        return [OneDofTwistJoint([twist.copy()]) for twist in self._twists]
+        return [OneDofTwistJoint([twist.xi().copy()]) for twist in self._twists]
 
 
 class Jacobian(object):

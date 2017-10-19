@@ -176,9 +176,12 @@ class MocapFrameTracker(MocapTracker):
             orig_points = frame[self.tracked_frame_indices[visible_inds], :, 0]
             desired_points = self.tracked_frame_points[visible_inds]
             try:
-                transform = kinmodel.Transform(homog_array=find_homog_trans(orig_points, desired_points)[0],
-                                               reference_frame=self.name,
-                                               target=self.world_frame_name)
+                transform = kinmodel.Transform(homog_array=find_homog_trans(desired_points, orig_points)[0],
+                                               reference_frame=self.world_frame_name,
+                                               target=self.name)
+                # transform = kinmodel.Transform(homog_array=find_homog_trans(orig_points, desired_points)[0],
+                #                                reference_frame=self.name,
+                #                                target=self.world_frame_name)
                 self._last_transform = transform
             except ValueError:
                 # Not enough points visible for tf.transformations to compute the transform

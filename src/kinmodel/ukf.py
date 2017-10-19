@@ -29,8 +29,12 @@ class UnscentedKalmanFilter(object):
         self.x = np.atleast_1d(x0.squeeze())[:,None]
         self.P = P0
         state_dim = self.x.shape[0]
-        meas_dim = meas_func(x0).shape[0]
-        self.Q = np.identity(state_dim) * Q
+        meas_dim = meas_func(self.x).shape[0]
+        self.Q = Q
+        self.R = R
+
+    def set_covariances(self, Q, R):
+        self.Q = Q
         self.R = R
 
     def filter(self, observation, plot_error=False):
