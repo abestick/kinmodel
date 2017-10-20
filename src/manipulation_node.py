@@ -2,10 +2,22 @@
 from kinmodel.syms import CostLearningModel, ManipulationModel, CostModel, KinematicModel, CartesianTracker
 from kinmodel import KinematicTree, Twist, Transform
 from kinmodel.track_mocap import KinematicTreeExternalFrameTracker
-from baxter_force_control.tools import grip_point
 import dill, json, sys
 import numpy as np
 from os.path import expanduser
+
+
+def grip_point(points):
+    distances = [None] * len(points)
+    midpoints = [None] * len(points)
+    for i in range(len(points)):
+        other_points = points[:]
+        other_points.pop(i)
+        diff = np.diff(other_points, axis=0).squeeze()
+        midpoints[i] = np.mean(other_points, axis=0).squeeze()
+        distances[i] = np.linalg.norm(diff)
+
+    return midpoints[np.argmax(distances)]
 
 
 HOME = expanduser("~")
@@ -16,9 +28,9 @@ sys.setrecursionlimit(sys.getrecursionlimit()*1000)
 
 if load:
     print('Loading Kinematic Models')
-    # object_kin_model = dill.load(open('/home/pedge/object.d', 'rb'))
-    # human_kin_model = dill.load(open('/home/pedge/human.d', 'rb'))
-    learning_model = dill.load(open("/home/pedge/peter1.d", "rb"))
+    # object_kin_model = dill.load(open(HOME+'/object.d', 'rb'))
+    # human_kin_model = dill.load(open(HOME+'/human.d', 'rb'))
+    learning_model = dill.load(open(HOME+"/peter1.d", "rb"))
 
 else:
     object_kin_tree = KinematicTree(json_filename=HOME + '/experiment/box/new_box_opt.json')
@@ -43,17 +55,17 @@ else:
     print('Creating Human Kinematic Model')
     human_kin_model = KinematicModel(human_kin_tree, human_joints, 'human', 'hand')
     print('Saving...')
-    dill.dump(human_kin_model, open('/home/pedge/human.d', 'wb'))
+    dill.dump(human_kin_model, open(HOME+'/human.d', 'wb'))
     print('Done.')
 
     print('Creating Object Kinematic Model')
     object_kin_model = KinematicModel(object_kin_tree, object_joints, 'robot', 'grip')
     print('Saving...')
-    dill.dump(object_kin_model, open('/home/pedge/object.d', 'wb'))
+    dill.dump(object_kin_model, open(HOME+'/object.d', 'wb'))
     print('Done.')
 
-    # object_kin_model = dill.load(open('/home/pedge/object.d', 'rb'))
-    # human_kin_model = dill.load(open('/home/pedge/human.d', 'rb'))
+    # object_kin_model = dill.load(open(HOME+'/object.d', 'rb'))
+    # human_kin_model = dill.load(open(HOME+'/human.d', 'rb'))
 
     print('Creating Cartesian Tracker')
     cartesian_tracker = CartesianTracker(0.01875, Transform(), Twist())
@@ -78,7 +90,7 @@ else:
     print('Creating Learning Model')
     learning_model = CostLearningModel(manip_model, cost_model)
 
-    dill.dump(learning_model, open("/home/pedge/peter1.d", "wb"))
+    dill.dump(learning_model, open(HOME+"/peter1.d", "wb"))
 
 
 points = np.random.random((32, 3, 1))

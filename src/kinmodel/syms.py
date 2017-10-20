@@ -433,7 +433,7 @@ class ManipulationModel(object):
         input_jac = self.active_kinematic_model.jacobian(*input_joints)
         passive_jac_pinv = np.linalg.pinv(self.passive_kinematic_model.jacobian(*passive_joints))
         rotation = self.cartesian_tracker.get_transform(*self.rotation_frames).R()
-        return np.vstack((np.ones((self.split_point, self.split_point)), passive_jac_pinv.dot(rotation.dot(input_jac))))
+        return np.vstack((np.eye(self.split_point), passive_jac_pinv.dot(rotation.dot(input_jac))))
 
     def disturbance_matrix(self, state_vector):
         _,  = self.split(state_vector)
