@@ -3,3 +3,4 @@
 *.profile
 *.npz
 *.bag
+.idea/

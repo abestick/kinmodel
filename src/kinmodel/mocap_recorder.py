@@ -179,7 +179,7 @@ def get_closest_visible(data, index):
         raise RuntimeError('Markers are occluded in every frame of data')
 
 
-def collect_model_data(kinmodel_json, output_npz):
+def collect_model_data(kinmodel_json, output_npz, timed_counts=-1):
 
     # Generate chains from the kinematic model file
     kin_tree = kinmodel.KinematicTree(json_filename=kinmodel_json)
@@ -207,33 +207,35 @@ def collect_model_data(kinmodel_json, output_npz):
     recorder = MocapRecorder()
 
     #Capture the 0-config
-    raw_input('RECORDING: Press <Enter> to capture the 0-configuration: ')
+    # raw_input('RECORDING: Press <Enter> to capture the 0-configuration: ')
     print('Waiting for all markers to be visible...')
     recorder.record()
     recorder.annotate_next_visible(all_markers, 'zero_config')
 
-    #Capture the calibration sequence
-    # for chain in CHAINS.keys():
-    #     while True: 
-    #         command = raw_input('RECORDING ' + chain + ': Press <Enter> to capture a pose or n+<Enter> to move to the next chain: ')
-    #         if command is 'n':
-    #             break
-    #         else:
-    #             recorder.annotate(chain)
-    #             print('Captured frame ' + str(frame))
-    #             frame += 1
-
-
-    #Capture the calibration sequence
+    # Capture the calibration sequence
     frame = 1
-    for chain in CHAINS.keys():
-        raw_input('Press ENTER to start recording frames')
-        for i in range(40):
+    if timed_counts < 0:
+        for chain in CHAINS.keys():
+            while True:
+                command = raw_input('RECORDING ' + chain + ': Press <Enter> to capture a pose or n+<Enter> to move to the next chain: ')
+                if command is 'n':
+                    break
+                else:
+                    recorder.annotate(chain)
+                    print('Captured frame ' + str(frame))
+                    frame += 1
+
+    else:
+        for chain in CHAINS.keys():
+            print('Press ENTER to start recording frames')
             rospy.sleep(1)
-        
-            recorder.annotate(chain)
-            print('Captured frame ' + str(frame))
-            frame += 1
+            # raw_input('Press ENTER to start recording frames')
+            for i in range(timed_counts):
+                rospy.sleep(1)
+
+                recorder.annotate(chain)
+                print('Captured frame ' + str(frame))
+                frame += 1
 
     recorder.stop()
 
