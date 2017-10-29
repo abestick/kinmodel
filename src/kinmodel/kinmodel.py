@@ -240,10 +240,10 @@ class Transform(GeometricPrimitive):
         return cls(homog_array)
 
     @classmethod
-    def from_p_R(cls, translation_array, rotation_matrix):
+    def from_p_R(cls, translation_array, self._R):
         homog_array = np.identity(4)
         homog_array[:, 3] = np.array(translation_array).flatten()
-        homog_array[:3, :3] = np.array(rotation_matrix).squeeze()
+        homog_array[:3, :3] = np.array(self._R).squeeze()
         return cls(homog_array)
 
     def __init__(self, homog_array=None, reference_frame='', target=''):
@@ -659,10 +659,12 @@ class Rotation(GeometricPrimitive):
         return quaternion_from_matrix(self.R())
 
     def axis_angle(self):
-        u = np.array([self._R[2, 1] - self._R[1, 2],
-                      self._R[0, 2] - self._R[2, 0],
-                      self._R[1, 0] - self._R[0, 1]])
-        return u
+        angle = np.arccos((np.sum(np.diag(self._R)) - 1) / 2)
+        x = (self._R[2, 1] - self._R[1, 2])
+        y = (self._R[0, 2] - self._R[2, 0])
+        z = (self._R[1, 0] - self._R[0, 1])
+        axis = np.array((x, y, z))
+        return axis / np.linalg.norm(axis) * angle
 
     def to_dict(self):
         return dict(zip(self.quaternion_names, self.quaternion()))
