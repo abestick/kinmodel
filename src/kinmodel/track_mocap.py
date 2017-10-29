@@ -63,7 +63,7 @@ class MocapTracker(object):
         for i, (frame, timestamp) in enumerate(stream):
             if print_idx:
                 print(i)
-            if self.exit:
+            if self.exit or rospy.is_shutdown():
                 break
             if mocap_transformer is not None:
                 frame = mocap_transformer.transform(frame)
@@ -884,7 +884,7 @@ def check_orthogonal(u, v, zero_thresh=1e-15):
 
 
 def orthogonal_projection(v, fixed):
-    return np.cross(np.cross(fixed, v), v)
+    return np.cross(np.cross(fixed, v), fixed)
 
 
 def transform_from_axes(origin, **axes):
@@ -894,6 +894,7 @@ def transform_from_axes(origin, **axes):
     x, y, z = [unit_vector(axes[axis]) if axis in axes else unit_vector(np.cross(axes[order[(i+1)%3]], axes[order[(i+2)%3]]))
         for i, axis in enumerate(order)]
 
+    print(x, y, z)
     rotation_matrix = np.vstack((x, y, z)).T
 
     return np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))  

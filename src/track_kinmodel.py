@@ -10,12 +10,25 @@ from kinmodel.track_mocap import KinematicTreeTracker
 from extra_baxter_tools.conversions import matrix_to_pose_msg, array_to_point_msg, stamp
 import tf
 from tf.transformations import inverse_matrix
-from geometry_msgs.msg import PoseStamped, PointStamped
+from geometry_msgs.msg import PoseStamped, PointStamped, Point32
+from sensor_msgs.msg import PointCloud
 
 FRAMERATE = 50
 
 
 def track(kinmodel_json_optimized):
+
+    #Load the calibration sequence
+    calib_data = np.load('/home/pedge/experiment/shoulder_peter/shoulder_peter_rec.npz')
+    ukf_mocap = load_mocap.ArrayMocapSource(calib_data['full_sequence'][:,:,:], FRAMERATE).get_stream()
+
+    # Set the base frame coordinate transformation
+    zc_points = ukf_mocap.read()[0]
+    zc_point_cloud = PointCloud(points=[Point32(*xyz) for xyz in zc_points])
+    zc_point_cloud.header.frame_id = 'world'
+    pc_pub = rospy.Publisher('zero_conf_points', PointCloud, queue_size=100)
+
+
     rospy.init_node('kin_tree_tracker')
     plt.ion()
 
@@ -27,7 +40,7 @@ def track(kinmodel_json_optimized):
     ukf_mocap = load_mocap.PointCloudMocapSource('/mocap_point_cloud')
     tracker_kin_tree = kinmodel.KinematicTree(json_filename=kinmodel_json_optimized)
     # tracker_kin_tree.json('new_'+kinmodel_json_optimized)
-    # shoulder_point = array_to_point_msg(tracker_kin_tree.get_params()['shoulder'].params)
+    shoulder_point = array_to_point_msg(tracker_kin_tree.get_params()['shoulder'].params)
     # kin_tree = kinmodel.KinematicTree(json_filename=args.kinmodel_json_optimized)
 
     tf_pub = tf.TransformBroadcaster()
@@ -49,8 +62,10 @@ def track(kinmodel_json_optimized):
         tf_pub.sendTransform(transform[0:3, 3],
             tf.transformations.quaternion_from_matrix(transform),
             rospy.Time.now(), 'base_frame', 'world')
-        # msg = stamp(shoulder_point, frame_id='base_frame')
-        # pub.publish(msg)
+        msg = stamp(shoulder_point, frame_id='base_frame')
+        pub.publish(msg)
+        zc_point_cloud.header.stamp = rospy.Time.now()
+        pc_pub.publish(zc_point_cloud)
 
     tracker.register_callback(publish_extras)
     #Run the tracker in the main thread for now

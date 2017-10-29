@@ -50,16 +50,20 @@ def fit_kinmodel(kinmodel_json, kinmodel_json_optimized, mocap_npz):
 
     # Set the base frame coordinate transformation
     desired = ukf_mocap.read()[0][base_indices,:,0]
-    av = np.mean(desired, axis=0)
+
     # desired = desired - np.mean(desired, axis=0)
     print('Getting base transform')
-    desired_transform = inverse_matrix(plane_based_transform(desired, normal='y', z=[0, 0, 1]))
+    # this should be the transform world->base_frame that we want
+    desired_transform = inverse_matrix(plane_based_transform(desired, normal='y', z=[0, 1, 0]))
+    raw_input(desired_transform)
+
+    # These should be how the base link points look when transfromed into the base_frame
     desired = transform_points(desired, desired_transform)
     data_array = np.dstack((calib_data['full_sequence'][:,:,0:1],
                                 calib_data['full_sequence'][:,:,calib_data[GROUP_NAME]]))
     mocap = load_mocap.ArrayMocapSource(data_array, FRAMERATE).get_stream()    
 
-    #Set the coordinate frame for the mocap sequence
+    # Set the coordinate frame for the mocap sequence
     mocap.set_coordinates(base_indices, desired, mode='time_varying')
     
     #Generate the feature observation dicts
