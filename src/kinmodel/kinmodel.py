@@ -240,10 +240,10 @@ class Transform(GeometricPrimitive):
         return cls(homog_array)
 
     @classmethod
-    def from_p_R(cls, translation_array, self._R):
+    def from_p_R(cls, translation_array, R):
         homog_array = np.identity(4)
         homog_array[:, 3] = np.array(translation_array).flatten()
-        homog_array[:3, :3] = np.array(self._R).squeeze()
+        homog_array[:3, :3] = np.array(R).squeeze()
         return cls(homog_array)
 
     def __init__(self, homog_array=None, reference_frame='', target=''):
