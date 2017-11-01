@@ -40,8 +40,6 @@ class Experiment(object):
         details.close()
 
     def collect_model_data(self):
-        raw_input('Stand in with your elbow by your side and your arm at ninety degrees.\n'
-                  '[Peter] Press ENTER to begin collecting model data.')
         collect_model_data(self.kinmodel_json, self.output_npz, timed_counts=-1)
 
     def optimize(self):

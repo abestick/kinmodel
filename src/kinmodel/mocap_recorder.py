@@ -207,7 +207,7 @@ def collect_model_data(kinmodel_json, output_npz, timed_counts=-1):
     recorder = MocapRecorder()
 
     #Capture the 0-config
-    # raw_input('RECORDING: Press <Enter> to capture the 0-configuration: ')
+    raw_input('RECORDING: Press <Enter> to capture the 0-configuration: ')
     print('Waiting for all markers to be visible...')
     recorder.record()
     recorder.annotate_next_visible(all_markers, 'zero_config')
