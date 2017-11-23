@@ -182,16 +182,21 @@ def get_sym_body_jacobian(kin_tree, manip_frame, position_only=False):
     kin_tree = kin_tree.to_1d_chain()
     twists = kin_tree.get_twist_chain(manip_frame)
     sym_twists = [SymTwist(xi[:3], xi[3:], theta) for theta, xi in twists.items()]
+    sym_twists_inv = [SymTwist(-xi[:3], -xi[3:], theta) for theta, xi in reversed(twists.items())]
     features = kin_tree.get_features()
 
-    manip_pox = simplify(reduce(lambda x, y: x*y, (t.exp for t in sym_twists)), ratio=1.0) # syms
-    root0_manip = Matrix(features[manip_frame].point()) # numbers
-    root_manip = manip_pox * root0_manip
+    # manip_pox = simplify(reduce(lambda x, y: x*y, (t.exp for t in sym_twists)), ratio=1.0) # syms
+    manip_pox_inv = simplify(reduce(lambda x, y: x*y, (t.exp for t in sym_twists_inv)), ratio=1.0) # syms
+    # root0_manip = Matrix(features[manip_frame].point()) # numbers
+    manip_root0 = Matrix(features[manip_frame].inv().homog()) # numbers
+    # manip_root0 = root0_manip.inv()
+    # root_manip = manip_pox * root0_manip
+    manip_root = manip_root0 * manip_pox_inv
+    manip_root_adj = adjoint(manip_root)
 
     columns = [manip_root_adj * twist.xi for twist in sym_twists]
 
     jacobian = Matrix(reduce(MatrixBase.row_join, columns))
-    jacobian[:3, :] += np_skew * jacobian[3:, :]
 
     if position_only:
         jacobian = jacobian[:3, :]

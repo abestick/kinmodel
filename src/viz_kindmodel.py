@@ -17,7 +17,7 @@ FRAMERATE = 50
 
 class KinTreeViz(object):
 
-    def __init__(self, kin_tree, zero_points):
+    def __init__(self, kin_tree, zero_points, ns=''):
         """
 
         :param kinmodel.KinematicTree kin_tree:
@@ -35,7 +35,7 @@ class KinTreeViz(object):
         self.axes = {joint_name: joint_to_msg(joint.params) for joint_name, joint in joints.items()}
         self.pubs = {joint_name: rospy.Publisher(joint_name, PoseStamped if isinstance(self.axes[joint_name], Pose) else PointStamped, queue_size=100) for joint_name in joints}
         self.tf_pub = tf.TransformBroadcaster()
-        self.point_pub = rospy.Publisher('mocap_point_cloud', PointCloud, queue_size=100)
+        self.point_pub = rospy.Publisher(ns + '/mocap_point_cloud', PointCloud, queue_size=100)
         self.timer = rospy.Timer(rospy.Duration(0.25), self.publish)
 
     def publish(self, event):
@@ -45,7 +45,7 @@ class KinTreeViz(object):
                              tf.transformations.quaternion_from_matrix(self.transform),
                              rospy.Time.now(), 'base_frame', 'world')
         for topic in self.pubs:
-            self.pubs[topic].publish(stamp(self.axes[topic], frame_id='base_frame'))
+            self.pubs[topic].publish(stamp(self.axes[topic], frame_id='base_frame_ns'))
 
 
 def joint_to_msg(params):
@@ -98,7 +98,7 @@ def track():
     name = 'andrea'
     obj = 'obj1'
     human_json = '/home/pedge/experiment/%s/%s.json' % (name, name)
-    obj_json = '/home/pedge/experiment/%s/%s_j01_opt.json' % (obj,obj)
+    obj_json = '/home/pedge/experiment/%s/%s_opt.json' % (obj,obj)
 
     calib_data = np.load('/home/pedge/experiment/%s/%s_rec.npz' % (obj,obj))
     mocap = load_mocap.ArrayMocapSource(calib_data['full_sequence'][:, :, :], FRAMERATE).get_stream()
@@ -106,7 +106,7 @@ def track():
     # Set the base frame coordinate transformation
     zero_points = mocap.read()[0][:,:,0]
 
-    # human_ktv = KinTreeViz(kinmodel.KinematicTree(json_filename=human_json))
+    human_ktv = KinTreeViz(kinmodel.KinematicTree(json_filename=human_json), zero_points)
     kin_tree = kinmodel.KinematicTree(json_filename=obj_json)
     object_ktv = KinTreeViz(kin_tree, zero_points)
     rospy.spin()

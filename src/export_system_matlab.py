@@ -1,10 +1,12 @@
 #!/usr/bin/env python
-from kinmodel.syms import CostLearningModel, ManipulationModel, CostModel, KinematicModel, CartesianTracker
+from kinmodel.syms import get_sym_body_jacobian, left_pinv
 from kinmodel import KinematicTree, Twist, Transform
 from kinmodel.track_mocap import KinematicTreeExternalFrameTracker
-import dill, json, sys
+import dill, sys
 import numpy as np
+from sympy import Matrix, eye
 from os.path import expanduser
+from sympy.printing.octave import octave_code
 
 
 def grip_point(points):
@@ -21,7 +23,7 @@ def grip_point(points):
 
 
 HOME = expanduser("~")
-name = 'peter1'
+names = ['rob', 'andrea', 'sarah']
 load = False
 sys.setrecursionlimit(sys.getrecursionlimit()*1000)
 
@@ -33,66 +35,58 @@ if load:
     learning_model = dill.load(open(HOME+"/peter1.d", "rb"))
 
 else:
-    object_kin_tree = KinematicTree(json_filename=HOME + '/experiment/box/new_box_opt.json')
+    object_kin_tree = KinematicTree(json_filename=HOME + '/experiment/object/object.json')
 
     input_features = object_kin_tree.get_joints()['joint_3'].children
     input_points = [np.array(p.primitive) for p in input_features]
     grip_location = grip_point(input_points)
 
     object_frame_tracker = KinematicTreeExternalFrameTracker(object_kin_tree)
-    robot_indices, robot_points = object_frame_tracker.attach_frame('joint_0', 'robot')
+    robot_indices, robot_points = object_frame_tracker.attach_frame('base', 'robot')
     grip_indices, grip_points = object_frame_tracker.attach_frame('joint_3', 'grip', position=grip_location)
 
-    human_kin_tree = KinematicTree(json_filename=HOME + '/experiment/%s/new_%s_opt.json' % (name, name)).to_1d_chain()
-    human_frame_tracker = KinematicTreeExternalFrameTracker(human_kin_tree)
-    human_indices, human_points = human_frame_tracker.attach_frame('base', 'human')
-    human_frame_tracker.attach_frame('elbow', 'hand')
+    for i, name in enumerate(names):
+        human_kin_tree = KinematicTree(json_filename=HOME + '/experiment/%s/%s.json' % (name, name)).to_1d_chain()
+        human_frame_tracker = KinematicTreeExternalFrameTracker(human_kin_tree)
+        human_indices, human_points = human_frame_tracker.attach_frame('base', 'human')
+        human_frame_tracker.attach_frame('elbow', 'grip')
 
-    object_joints = ['joint_%d' % i for i in range(4)]
-    human_joints = ['shoulder_0', 'shoulder_1', 'shoulder_2', 'elbow']
-    joint_names = human_joints + object_joints
+        print('Creating Human Kinematic Model')
+        human_jacobian = get_sym_body_jacobian(human_kin_tree, 'grip')
 
-    print('Creating Human Kinematic Model')
-    human_kin_model = KinematicModel(human_kin_tree, human_joints, 'human', 'hand')
-    print('Saving...')
-    dill.dump(human_kin_model, open(HOME+'/human.d', 'wb'))
-    print('Done.')
+        print('Saving..')
+        dill.dump(human_jacobian, open(HOME + "/human_jac_%d.d" % i, "wb"))
+
+        print('Printing to Matlab')
+        matlab_file = open(HOME + "/human_jac_%d.m" % i, "wb")
+        matlab_string = octave_code(human_jacobian, assign_to='B')
+        matlab_file.write(matlab_string)
 
     print('Creating Object Kinematic Model')
-    object_kin_model = KinematicModel(object_kin_tree, object_joints, 'robot', 'grip')
-    print('Saving...')
-    dill.dump(object_kin_model, open(HOME+'/object.d', 'wb'))
-    print('Done.')
+    object_jacobian = get_sym_body_jacobian(object_kin_tree, 'grip')
 
-    # object_kin_model = dill.load(open(HOME+'/object.d', 'rb'))
-    # human_kin_model = dill.load(open(HOME+'/human.d', 'rb'))
+    print('Saving..')
+    dill.dump(object_jacobian, open(HOME + "/obj_jac.d", "wb"))
 
-    print('Creating Cartesian Tracker')
-    cartesian_tracker = CartesianTracker(0.01875, Transform(), Twist())
-    cartesian_tracker.track_frame('grip', grip_indices, grip_points)
-    cartesian_tracker.track_frame('human', human_indices, human_points)
-    cartesian_tracker.track_frame('robot', robot_indices, robot_points)
+    print('Printing to Matlab')
+    matlab_file = open(HOME + "/obj_jac.m", "wb")
+    matlab_string = octave_code(object_jacobian, assign_to='B')
+    matlab_file.write(matlab_string)
 
-    print('Creating Manipulation Model')
-    manip_model = ManipulationModel('robot', 'human', 'grip', cartesian_tracker, human_kin_model, object_kin_model)
+    # print('Creating B(x) Matrix')
+    # print('Inverting')
+    # pinv_obj = left_pinv(object_jacobian)
+    # print('Multiplying')
+    # mult = pinv_obj*human_jacobian
+    # input_matrix = Matrix.vstack(eye(4), mult)
+    #
+    # print('Saving')
+    # dill.dump(input_matrix, open(HOME + "/input_matrix.d", "wb"))
+    #
+    # print('Printing to Matlab')
+    # matlab_file = open(HOME + "/input_matrix.m", "wb")
+    # matlab_string = octave_code(input_matrix, assign_to='B')
+    # matlab_file.write(matlab_string)
+    # matlab_file.close()
 
-    cost_names = ['ergonomic', 'configuration']
-    with open(HOME + '/experiment/%s/%s_ergo_ref.json' % (name, name)) as f:
-        ergo_reference = json.load(f)
-    ergonomic_reference = [ergo_reference[k] for k in human_joints]
-    configuration_reference = [0]*4
-    references = [ergonomic_reference, configuration_reference]
-    indices = [range(len(human_joints)), range(len(human_joints), len(joint_names))]
-
-    print('Creating Cost Model')
-    cost_model = CostModel(cost_names, references, indices)
-
-    print('Creating Learning Model')
-    learning_model = CostLearningModel(manip_model, cost_model)
-
-    dill.dump(learning_model, open(HOME+"/peter1.d", "wb"))
-
-
-points = np.random.random((32, 3, 1))
-learning_model.init(points)
-print(learning_model.step(points))
+    print('Done')
