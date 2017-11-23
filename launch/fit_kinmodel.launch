@@ -1,0 +1,4 @@
+<launch>
+	<arg name="name"/>
+	<node name="fit_kinmodel" pkg="kinmodel" type="fit_kinmodel.py" args="$(env HOME)/experiment/templates/template.json $(env HOME)/experiment/$(arg name)/$(arg name).json $(env HOME)/experiment/$(arg name)/$(arg name)_rec.npz" output="screen" />
+</launch>

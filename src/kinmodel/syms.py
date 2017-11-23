@@ -137,7 +137,7 @@ def get_sym_jacobian(kin_tree, base_frame, manip_frame, position_only=False):
     :param str manip_frame:
     :return:
     """
-    incoming, outgoing = kin_tree.get_twist_chain(base_frame, manip_frame)
+    incoming, outgoing = kin_tree.get_twist_chains(base_frame, manip_frame)
     sym_incoming = [SymTwist(xi[:3], xi[3:], theta) for theta, xi in incoming.items()]
     sym_outgoing = [SymTwist(xi[:3], xi[3:], theta) for theta, xi in outgoing.items()]
 
@@ -161,6 +161,34 @@ def get_sym_jacobian(kin_tree, base_frame, manip_frame, position_only=False):
     base_root_adj = adjoint(base_root)
 
     columns = [base_root_adj * twist.xi for twist in sym_incoming + sym_outgoing]
+
+    jacobian = Matrix(reduce(MatrixBase.row_join, columns))
+    jacobian[:3, :] += np_skew * jacobian[3:, :]
+
+    if position_only:
+        jacobian = jacobian[:3, :]
+
+    return jacobian
+
+
+def get_sym_body_jacobian(kin_tree, manip_frame, position_only=False):
+    """
+
+    :param KinematicTree kin_tree:
+    :param str base_frame:
+    :param str manip_frame:
+    :return:
+    """
+    kin_tree = kin_tree.to_1d_chain()
+    twists = kin_tree.get_twist_chain(manip_frame)
+    sym_twists = [SymTwist(xi[:3], xi[3:], theta) for theta, xi in twists.items()]
+    features = kin_tree.get_features()
+
+    manip_pox = simplify(reduce(lambda x, y: x*y, (t.exp for t in sym_twists)), ratio=1.0) # syms
+    root0_manip = Matrix(features[manip_frame].point()) # numbers
+    root_manip = manip_pox * root0_manip
+
+    columns = [manip_root_adj * twist.xi for twist in sym_twists]
 
     jacobian = Matrix(reduce(MatrixBase.row_join, columns))
     jacobian[:3, :] += np_skew * jacobian[3:, :]
@@ -532,3 +560,7 @@ class CostLearningModel(object):
     def init(self, points):
         self.manipulation_model.init_filters(points)
         return self.step(points)
+
+
+def left_pinv(M):
+    return M.H * (M * M.H) ** -1

@@ -14,6 +14,7 @@ import numpy.linalg as npla
 from phasespace.mocap_definitions import MocapWrist
 from phasespace.load_mocap import transform_frame, find_homog_trans, MocapStream, MocapTransformer
 from copy import deepcopy
+from scipy.optimize import minimize
 
 
 class MocapTracker(object):
@@ -226,7 +227,7 @@ class MocapUkfTracker(MocapTracker):
                                                    self.state_space_model.measurement_model,
                                                    x0=np.zeros(self.state_space_model.state_length()),
                                                    P0=np.identity(self.state_space_model.state_length()) * 0.25,
-                                                   Q=np.pi / 2 / 80, R=1e-2)
+                                                   Q=np.pi / 2 / 800, R=1e-2)
         self._initialized = False
 
     def _unvectorize_estimation(self, state_vector=None):
@@ -309,11 +310,14 @@ class MocapUkfTracker(MocapTracker):
             names = []
             positions = []
             for joint_name in result:
-                for i, joint_position in enumerate(result[joint_name]):
-                    names.append(joint_name + '_' + str(i))
-                    positions.append(np.rad2deg(joint_position))
-            msg = sensor_msgs.JointState(header=Header(stamp=rospy.Time.now()),
-                    position=positions, name=names)
+                if len(result[joint_name]) == 1:
+                    names.append(joint_name)
+                    positions.append(result[joint_name][0])
+                else:
+                    for i, joint_position in enumerate(result[joint_name]):
+                        names.append(joint_name + '_' + str(i))
+                        positions.append(np.rad2deg(joint_position))
+            msg = sensor_msgs.JointState(header=Header(stamp=rospy.Time.now()), position=positions, name=names)
             self._estimation_pub.publish(msg)
 
     def _initialize_filter(self, initial_frame, reps=50):
@@ -420,6 +424,75 @@ class KinematicTreeTracker(MocapUkfTracker):
             self._kin_tree.set_config(state_dict)
             return self._kin_tree.observe_features()
         return obs_func
+
+
+class KinematicTreeOptimalTracker(object):
+
+    def __init__(self, kin_tree):
+        """
+
+        :param kinmodel.KinematicTree kin_tree:
+        """
+        self.kin_tree = kin_tree.copy().to_1d_chain()
+        self.kin_tree.set_zero_config()
+        self.config_order = self.kin_tree.get_config().keys()
+        self.config_order.remove('base')
+        self.observation_indices = {s: int(s.split('_')[-1]) for s in self.kin_tree.get_features()}
+
+    @staticmethod
+    def _vector_diff_norm(a, b):
+        return np.linalg.norm(np.array(a) - np.array(b))
+
+    def get_config_dict(self, config_array):
+        return {name: value for name, value in zip(self.config_order, config_array)}
+
+    def get_config_vec(self, config_dict):
+        return np.array([config_dict[name] for name in self.config_order])
+
+    def get_feature_dict(self, msg):
+        return {name: kinmodel.Point.from_cartesian((msg.points[idx].x, msg.points[idx].y, msg.points[idx].z))
+                for name, idx in self.observation_indices.items()}
+
+    def observation_error(self, configs, observations, error_func=None):
+        if error_func is None:
+            error_func = self._vector_diff_norm
+        self.kin_tree.set_config(configs)
+        model_observations = self.kin_tree.observe_features()
+        error = 0
+        for obs_name in observations:
+            error += error_func(model_observations[obs_name], observations[obs_name])
+        return error
+
+    def displacement(self, configs, error_func=None):
+        if error_func is None:
+            error_func = self._vector_diff_norm
+        last_configs = self.kin_tree.get_config()
+        error = 0
+        for config_name in configs:
+            error += error_func(configs[config_name], last_configs[config_name])
+
+        return error
+
+    def displacement_regulated_observation_error(self, configs, observations, alpha, error_func=None):
+        if error_func is None:
+            error_func = self._vector_diff_norm
+        return self.observation_error(configs, observations, error_func) + alpha*self.displacement(configs, error_func)
+
+    def get_optimization_function(self, observations, displacement_regulation=None):
+        def f(x):
+            configs = self.get_config_dict(x)
+            return self.observation_error(configs, observations) if displacement_regulation is None else \
+                self.displacement_regulated_observation_error(configs, observations, displacement_regulation)
+        return f
+
+    def get_configs(self, observations, displacement_regulation=None):
+        f = self.get_optimization_function(observations, displacement_regulation)
+        res = minimize(f, self.get_config_vec(self.kin_tree.get_config()))
+        return self.get_config_dict(res.x)
+
+    def process_msg(self, msg, displacement_regulation=None):
+        observations = self.get_feature_dict(msg)
+        return self.get_configs(observations, displacement_regulation)
 
 
 class WristTracker(MocapUkfTracker, MocapWrist):
@@ -937,7 +1010,7 @@ def determine_joint_coordinate_transform(link_points, joint):
             if y_axis[1] < 0:
                 y_axis = -y_axis
 
-            z_axis = unit_vector(orthogonal_projection(y_axis, normal))
+            z_axis = unit_vector(orthogonal_projection(normal, y_axis))
             if z_axis[2] < 0:
                 z_axis = -z_axis
 

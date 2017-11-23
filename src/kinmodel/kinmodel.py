@@ -240,10 +240,10 @@ class Transform(GeometricPrimitive):
         return cls(homog_array)
 
     @classmethod
-    def from_p_R(cls, translation_array, self._R):
+    def from_p_R(cls, translation_array, R):
         homog_array = np.identity(4)
         homog_array[:, 3] = np.array(translation_array).flatten()
-        homog_array[:3, :3] = np.array(self._R).squeeze()
+        homog_array[:3, :3] = np.array(R).squeeze()
         return cls(homog_array)
 
     def __init__(self, homog_array=None, reference_frame='', target=''):
@@ -1761,7 +1761,22 @@ class KinematicTree(object):
         feature_obs = self.observe_features()
         return feature_obs[base_frame_name].inv() * feature_obs[target_frame_name]
 
-    def get_twist_chain(self, base_frame_name, manip_frame_name):
+    def get_twist_chain(self, manip_frame_name):
+        # Get all the joints that connect the two frames along the shortest path
+        outgoing_joints = self.get_chain(manip_frame_name)
+
+        # Collect all the twists for each chain
+        all_joints = self.get_joints()
+        outgoing_twists = OrderedDict()
+        for i, joint_name in enumerate(outgoing_joints):
+            try:
+                outgoing_twists.update(all_joints[joint_name].twist.xi_dict(joint_name))
+            except AttributeError:
+                pass  # Stationary joint - doesn't have a twist
+
+        return outgoing_twists
+
+    def get_twist_chains(self, base_frame_name, manip_frame_name):
         # Get all the joints that connect the two frames along the shortest path
         incoming_joints = self.get_chain(base_frame_name)
         outgoing_joints = self.get_chain(manip_frame_name)
@@ -1800,7 +1815,7 @@ class KinematicTree(object):
         root_base_transform = feature_obs[base_frame_name]
 
         # Transform all the twists into the base frame
-        incoming_twists, outgoing_twists = self.get_twist_chain(base_frame_name, manip_frame_name)
+        incoming_twists, outgoing_twists = self.get_twist_chains(base_frame_name, manip_frame_name)
 
         outgoing_twists.update(incoming_twists)
         all_twists = outgoing_twists

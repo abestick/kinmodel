@@ -1,20 +1,21 @@
 #!/usr/bin/env python
 from __future__ import print_function
 import numpy as np
-import scipy as sp
-import numpy.linalg as np_la
+# import scipy as sp
+# import numpy.linalg as np_la
 import sys
 import phasespace.load_mocap as load_mocap
 import argparse
-import random
-import scipy.optimize
-import matplotlib.pyplot as plt
-import cProfile
-import json
+# import random
+# import scipy.optimize
+# import matplotlib.pyplot as plt
+# import cProfile
+# import json
 import kinmodel
 import matplotlib.pyplot as plt
 from kinmodel.track_mocap import plane_based_transform, transform_points
 from tf.transformations import inverse_matrix
+import rospy
 
 FRAMERATE = 50
 GROUP_NAME = 'tree'
@@ -25,7 +26,7 @@ def main():
     parser.add_argument('kinmodel_json', help='The kinematic model JSON file')
     parser.add_argument('kinmodel_json_optimized', help='The kinematic model JSON file')
     parser.add_argument('mocap_npz', help='The .npz file from mocap_recorder.py')
-    args = parser.parse_args()
+    args = parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
     fit_kinmodel(args.kinmodel_json, args.kinmodel_json_optimized, args.mocap_npz)
 
 
@@ -55,7 +56,7 @@ def fit_kinmodel(kinmodel_json, kinmodel_json_optimized, mocap_npz):
     print('Getting base transform')
     # this should be the transform world->base_frame that we want
     desired_transform = inverse_matrix(plane_based_transform(desired, normal='y', z=[0, 1, 0]))
-    raw_input(desired_transform)
+    print(desired_transform)
 
     # These should be how the base link points look when transfromed into the base_frame
     desired = transform_points(desired, desired_transform)
@@ -79,6 +80,7 @@ def fit_kinmodel(kinmodel_json, kinmodel_json_optimized, mocap_npz):
     # Run the optimization
     print('\nFirst optimization...')
     kin_tree.set_features(feature_obs[0])
+
     final_configs, final_twists, final_features = kin_tree.fit_params(feature_obs,
             optimize={'params':True, 'features':False, 'configs':True})
     print('Second optimization...')
@@ -87,5 +89,5 @@ def fit_kinmodel(kinmodel_json, kinmodel_json_optimized, mocap_npz):
     kin_tree.json(kinmodel_json_optimized)
     
 if __name__ == '__main__':
-    cProfile.run('main()', 'fit_kinmodel.profile')
-    # main()
+    # cProfile.run('main()', 'fit_kinmodel.profile')
+    main()
