@@ -74,19 +74,19 @@ else:
     matlab_file.write(matlab_string)
 
     # print('Creating B(x) Matrix')
-    # print('Inverting')
-    # pinv_obj = left_pinv(object_jacobian)
+    print('Inverting')
+    pinv_obj = left_pinv(object_jacobian)
     # print('Multiplying')
     # mult = pinv_obj*human_jacobian
     # input_matrix = Matrix.vstack(eye(4), mult)
     #
-    # print('Saving')
-    # dill.dump(input_matrix, open(HOME + "/input_matrix.d", "wb"))
+    print('Saving')
+    dill.dump(pinv_obj, open(HOME + "/pinv_obj_jac.d", "wb"))
     #
-    # print('Printing to Matlab')
-    # matlab_file = open(HOME + "/input_matrix.m", "wb")
-    # matlab_string = octave_code(input_matrix, assign_to='B')
-    # matlab_file.write(matlab_string)
-    # matlab_file.close()
+    print('Printing to Matlab')
+    matlab_file = open(HOME + "/input_matrix.m", "wb")
+    matlab_string = octave_code(pinv_obj, assign_to='B')
+    matlab_file.write(matlab_string)
+    matlab_file.close()
 
     print('Done')
