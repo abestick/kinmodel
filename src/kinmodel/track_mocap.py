@@ -426,7 +426,7 @@ class KinematicTreeTracker(MocapUkfTracker):
         return obs_func
 
 
-class KinematicTreeOptimalTracker(object):
+class KinematicTreeOptimalTracker(MocapTracker):
 
     def __init__(self, kin_tree):
         """
@@ -438,6 +438,37 @@ class KinematicTreeOptimalTracker(object):
         self.config_order = self.kin_tree.get_config().keys()
         self.config_order.remove('base')
         self.observation_indices = {s: int(s.split('_')[-1]) for s in self.kin_tree.get_features()}
+        base_idxs, base_frame_points = self.get_kin_tree_base_markers()
+
+        transformer = MocapTransformer()
+        transformer.set_coordinates(base_idxs, base_frame_points)
+        super(KinematicTreeOptimalTracker, self).__init__('kin_tree_optimal_tracker', transformer)
+
+    def get_base_transform(self):
+        return self._transformer.get_last_coordinates()
+
+    def get_kin_tree_base_markers(self):
+        # Get base marker names
+        base_markers = []
+        base_joint = self._kin_tree.get_root_joint()
+        for child in base_joint.children:
+            if not hasattr(child, 'children'):
+                # This is a feature
+                base_markers.append(child.name)
+
+        # Get mapping of marker names -> marker idxs
+        marker_indices = {}
+        for feature_name in self._kin_tree.get_features():
+            marker_indices[feature_name] = int(feature_name.split('_')[1])
+
+        # Get the desired coordinates of each base marker
+        base_frame_points = np.zeros((len(base_markers), 3, 1))
+        all_features = self._kin_tree.get_features()
+        for i, marker in enumerate(base_markers):
+            base_frame_points[i, :, 0] = all_features[marker].q()
+
+        base_idxs = [marker_indices[name] for name in base_markers]
+        return base_idxs, base_frame_points
 
     @staticmethod
     def _vector_diff_norm(a, b):

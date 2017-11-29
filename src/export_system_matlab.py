@@ -43,9 +43,9 @@ else:
 
     object_frame_tracker = KinematicTreeExternalFrameTracker(object_kin_tree)
     robot_indices, robot_points = object_frame_tracker.attach_frame('base', 'robot')
-    grip_indices, grip_points = object_frame_tracker.attach_frame('joint_3', 'grip', position=grip_location)
+    grip_indices, grip_points = object_frame_tracker.attach_frame('joint_3', 'grip')
 
-    for i, name in enumerate(names):
+    for i, name in enumerate([]):#names):
         human_kin_tree = KinematicTree(json_filename=HOME + '/experiment/%s/%s.json' % (name, name)).to_1d_chain()
         human_frame_tracker = KinematicTreeExternalFrameTracker(human_kin_tree)
         human_indices, human_points = human_frame_tracker.attach_frame('base', 'human')
@@ -66,10 +66,10 @@ else:
     object_jacobian = get_sym_body_jacobian(object_kin_tree, 'grip')
 
     print('Saving..')
-    dill.dump(object_jacobian, open(HOME + "/obj_jac.d", "wb"))
+    dill.dump(object_jacobian, open(HOME + "/obj_jac2.d", "wb"))
 
     print('Printing to Matlab')
-    matlab_file = open(HOME + "/obj_jac.m", "wb")
+    matlab_file = open(HOME + "/obj_jac2.m", "wb")
     matlab_string = octave_code(object_jacobian, assign_to='B')
     matlab_file.write(matlab_string)
 

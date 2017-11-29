@@ -17,15 +17,19 @@ FRAMERATE = 50
 
 class KinTreeViz(object):
 
-    def __init__(self, kin_tree, zero_points, ns=''):
+    def __init__(self, kin_tree, zero_points, frame_name, ns=''):
         """
 
         :param kinmodel.KinematicTree kin_tree:
         """
+        self.frame_name = frame_name
         zero_points = zero_points.squeeze()
         self.kin_tree = kin_tree
         base_idxs, base_points_base = get_base_points_base(kin_tree)
         base_points_world = zero_points[base_idxs, :]
+        visible = np.all(~np.isnan(base_points_world), axis=1)
+        base_points_base = base_points_base[visible, :]
+        base_points_world = base_points_world[visible, :]
         self.transform = find_homog_trans(base_points_base, base_points_world)[0]
         self.points = PointCloud(points=[Point32(*p) for p in zero_points])
         self.points.header.frame_id='world'
@@ -43,9 +47,9 @@ class KinTreeViz(object):
         self.point_pub.publish(self.points)
         self.tf_pub.sendTransform(self.transform[0:3, 3],
                              tf.transformations.quaternion_from_matrix(self.transform),
-                             rospy.Time.now(), 'base_frame', 'world')
+                             rospy.Time.now(), self.frame_name, 'world')
         for topic in self.pubs:
-            self.pubs[topic].publish(stamp(self.axes[topic], frame_id='base_frame_ns'))
+            self.pubs[topic].publish(stamp(self.axes[topic], frame_id=self.frame_name))
 
 
 def joint_to_msg(params):
@@ -95,20 +99,20 @@ def get_base_points_base(kin_tree):
 def track():
     # Load the calibration sequence
     rospy.init_node('kinmodel_viz')
-    name = 'andrea'
-    obj = 'obj1'
+    name = rospy.get_param('~name')
+    obj = 'object_rob'
     human_json = '/home/pedge/experiment/%s/%s.json' % (name, name)
-    obj_json = '/home/pedge/experiment/%s/%s_opt.json' % (obj,obj)
+    obj_json = '/home/pedge/experiment/object/object_%s.json' % name
 
-    calib_data = np.load('/home/pedge/experiment/%s/%s_rec.npz' % (obj,obj))
+    calib_data = np.load('/home/pedge/experiment/obj_%s/obj_%s_rec.npz' % (name, name))
     mocap = load_mocap.ArrayMocapSource(calib_data['full_sequence'][:, :, :], FRAMERATE).get_stream()
 
     # Set the base frame coordinate transformation
     zero_points = mocap.read()[0][:,:,0]
 
-    human_ktv = KinTreeViz(kinmodel.KinematicTree(json_filename=human_json), zero_points)
+    human_ktv = KinTreeViz(kinmodel.KinematicTree(json_filename=human_json), zero_points, 'human')
     kin_tree = kinmodel.KinematicTree(json_filename=obj_json)
-    object_ktv = KinTreeViz(kin_tree, zero_points)
+    object_ktv = KinTreeViz(kin_tree, zero_points, 'object')
     rospy.spin()
 
 

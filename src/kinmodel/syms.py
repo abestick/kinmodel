@@ -179,23 +179,29 @@ def get_sym_body_jacobian(kin_tree, manip_frame, position_only=False):
     :param str manip_frame:
     :return:
     """
+    print('loading tree')
     kin_tree = kin_tree.to_1d_chain()
     twists = kin_tree.get_twist_chain(manip_frame)
+    print('converting twists to syms')
     sym_twists = [SymTwist(xi[:3], xi[3:], theta) for theta, xi in twists.items()]
     sym_twists_inv = [SymTwist(-xi[:3], -xi[3:], theta) for theta, xi in reversed(twists.items())]
     features = kin_tree.get_features()
 
     # manip_pox = simplify(reduce(lambda x, y: x*y, (t.exp for t in sym_twists)), ratio=1.0) # syms
+    print('getting pox')
     manip_pox_inv = simplify(reduce(lambda x, y: x*y, (t.exp for t in sym_twists_inv)), ratio=1.0) # syms
     # root0_manip = Matrix(features[manip_frame].point()) # numbers
     manip_root0 = Matrix(features[manip_frame].inv().homog()) # numbers
     # manip_root0 = root0_manip.inv()
     # root_manip = manip_pox * root0_manip
+    print('multiplying with transform')
     manip_root = manip_root0 * manip_pox_inv
     manip_root_adj = adjoint(manip_root)
 
+    print('getting columns')
     columns = [manip_root_adj * twist.xi for twist in sym_twists]
 
+    print('setting up jacobian')
     jacobian = Matrix(reduce(MatrixBase.row_join, columns))
 
     if position_only:
