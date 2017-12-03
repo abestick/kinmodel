@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import rosbag
 import pandas as pd
+import pickle
 import numpy as np
 
 
@@ -31,6 +32,26 @@ def bag_to_data_frame(name, save_dir=SAVE_DIR):
     return dfs
 
 
+def snip(name, save_dir=SAVE_DIR):
+    bag = rosbag.Bag('/home/pedge/experiment/mixed_results/%s.bag' % name)
+
+    ends = []
+    starts = []
+    for topic, msg, t in bag.read_messages(topics=['/iiwa/state/DestinationReached', '/iiwa/command/CartesianPoseLin']):
+        if topic == '/iiwa/state/DestinationReached':
+            starts.append(t.to_sec())
+        else:
+            ends.append(t.to_sec())
+
+    bag.close()
+    ends.append(np.inf)
+
+    runs = zip(starts[-16:], ends[-16:])
+    data = {'runs': runs, 'starts': starts, 'ends': ends}
+
+    pickle.dump(data, open(save_dir + name + '_snip.df', 'wb'))
+
+
 names = [
     'andrea_0',
     'andrea_1',
@@ -56,9 +77,9 @@ save_dir2 = SAVE_DIR + '2'
 
 for name in names:
     print('Converting ' + name)
-    bag_to_data_frame(name)
+    snip(name)
 
 
 for name in names2:
     print('Converting ' + name)
-    bag_to_data_frame(name, save_dir=save_dir2)
+    snip(name)
