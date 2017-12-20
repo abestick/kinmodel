@@ -153,37 +153,37 @@ def get_joints(df, kin_tree):
 
 
 dfs = [
-    '_andrea_0.bag.df',
-    '_andrea_1.bag.df',
-    '_andrea_2.bag.df',
-    '_andrea_3.bag.df',
-    '_rob_0.bag.df',
-    '_rob_1.bag.df',
-    '_rob_2.bag.df',
-    '_rob_3.bag.df',
-    '_sarah_0.bag.df',
-    '_sarah_good_0.bag.df',
-    '_sarah_good_1.bag.df',
-    '_sarah_good_2.bag.df',
-    '_2017-10-31-17-06-02.bag.df',
+    # '_andrea_0.bag.df',
+    # '_andrea_1.bag.df',
+    # '_andrea_2.bag.df',
+    # '_andrea_3.bag.df',
+    # '_rob_0.bag.df',
+    # '_rob_1.bag.df',
+    # '_rob_2.bag.df',
+    # '_rob_3.bag.df',
+    # '_sarah_0.bag.df',
+    # '_sarah_good_0.bag.df',
+    # '_sarah_good_1.bag.df',
+    # '_sarah_good_2.bag.df',
+    # '_2017-10-31-17-06-02.bag.df',
     '_2017-10-31-17-12-24.bag.df',
     '_2017-10-31-17-30-42.bag.df'
 ]
 
 jsons = [
-    '/home/pedge/experiment/andrea/andrea.json',
-    '/home/pedge/experiment/andrea/andrea.json',
-    '/home/pedge/experiment/andrea/andrea.json',
-    '/home/pedge/experiment/andrea/andrea.json',
-    '/home/pedge/experiment/rob/rob.json',
-    '/home/pedge/experiment/rob/rob.json',
-    '/home/pedge/experiment/rob/rob.json',
-    '/home/pedge/experiment/rob/rob.json',
-    '/home/pedge/experiment/sarah/sarah.json',
-    '/home/pedge/experiment/sarah/sarah.json',
-    '/home/pedge/experiment/sarah/sarah.json',
-    '/home/pedge/experiment/sarah/sarah.json',
-    '/home/pedge/experiment/rob/rob.json',
+    # '/home/pedge/experiment/andrea/andrea.json',
+    # '/home/pedge/experiment/andrea/andrea.json',
+    # '/home/pedge/experiment/andrea/andrea.json',
+    # '/home/pedge/experiment/andrea/andrea.json',
+    # '/home/pedge/experiment/rob/rob.json',
+    # '/home/pedge/experiment/rob/rob.json',
+    # '/home/pedge/experiment/rob/rob.json',
+    # '/home/pedge/experiment/rob/rob.json',
+    # '/home/pedge/experiment/sarah/sarah.json',
+    # '/home/pedge/experiment/sarah/sarah.json',
+    # '/home/pedge/experiment/sarah/sarah.json',
+    # '/home/pedge/experiment/sarah/sarah.json',
+    # '/home/pedge/experiment/rob/rob.json',
     '/home/pedge/experiment/sarah/sarah.json',
     '/home/pedge/experiment/andrea/andrea.json',
 ]
@@ -195,6 +195,7 @@ SAVE_DIR = '/home/pedge/experiment/pd/'
 
 
 if __name__ == '__main__':
+    assert len(dfs) == len(jsons)
     for df_name, json in zip(dfs, jsons):
         df = pd.read_pickle(SAVE_DIR + df_name)
         print('Starting: %s' % df_name)
@@ -210,6 +211,6 @@ if __name__ == '__main__':
 
         object_joint_df = get_joints(df, kinmodel.KinematicTree(json_filename=obj_json))
         human_joint_df = get_joints(df, kinmodel.KinematicTree(json_filename=json))
-        human_joint_df.to_pickle(SAVE_DIR + 'joints/' + df_name)
-        object_joint_df.to_pickle(SAVE_DIR + 'joints/' + 'obj' + df_name)
+        human_joint_df.to_pickle(SAVE_DIR + 'joints2/' + df_name)
+        object_joint_df.to_pickle(SAVE_DIR + 'joints2/' + 'obj' + df_name)
         print('Done: %s' % df_name)
