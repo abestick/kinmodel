@@ -21,13 +21,15 @@ def get_kin_tree_base_markers(kin_tree):
     base_joint = kin_tree.get_root_joint()
     for child in base_joint.children:
         if not hasattr(child, 'children'):
-            # This is a feature
-            base_markers.append(child.name)
+            if 'mocap' in child.name:
+                # This is a feature
+                base_markers.append(child.name)
 
     # Get mapping of marker names -> marker idxs
     marker_indices = {}
     for feature_name in kin_tree.get_features():
-        marker_indices[feature_name] = int(feature_name.split('_')[1])
+        if 'mocap' in feature_name:
+            marker_indices[feature_name] = int(feature_name.split('_')[1])
 
     # Get the desired coordinates of each base marker
     base_frame_points = np.zeros((len(base_markers), 3, 1))
@@ -39,7 +41,7 @@ def get_kin_tree_base_markers(kin_tree):
     return base_idxs, base_frame_points.squeeze()
 
 
-def get_transforms(df, kin_tree, name='T_bw', inv=False):
+def get_base_transforms(df, kin_tree, name='T_bw', inv=False):
     """
     
     :param pd.DataFrame df: 
@@ -62,6 +64,32 @@ def get_transforms(df, kin_tree, name='T_bw', inv=False):
         return pd.Series([last_transform[0]])
 
     df[name] = df.apply(get_transform, axis=1)
+    return df
+
+
+def get_child_transforms(df, kin_tree, child, inv=False):
+    """
+
+    :param pd.DataFrame df:
+    :param kinmodel.KinematicTree kin_tree:
+    :param str name:
+    :return:
+    """
+    base_idx, base_points_base = get_kin_tree_base_markers(kin_tree)
+    last_transform = [np.eye(4)]
+    skipped = []
+
+    def get_transform(row):
+        try:
+            base_points_world = np.vstack(row[base_idx])
+            last_transform[0] = find_homog_trans(base_points_world, base_points_base)[0] if not inv else \
+                find_homog_trans(base_points_base, base_points_world)[0]
+        except np.linalg.LinAlgError:
+            skipped.append(row.name)
+
+        return pd.Series([last_transform[0]])
+
+    df[child] = df.apply(get_transform, axis=1)
     return df
 
 
@@ -143,7 +171,7 @@ class KinTreeObjFunc(object):
 
 def get_joints(df, kin_tree):
     print('getting transforms')
-    df = get_transforms(df, kin_tree)
+    df = get_base_transforms(df, kin_tree)
     print('transforming points')
     df = transform_points(df)
     df = kin_tree_friendly_df(df)

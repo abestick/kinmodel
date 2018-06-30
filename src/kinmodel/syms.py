@@ -210,7 +210,7 @@ def get_sym_body_jacobian(kin_tree, manip_frame, position_only=False):
     return jacobian
 
 
-def get_jacobian_func(kin_tree, base_frame, manip_frame, joint_names, position_only=False):
+def get_jacobian_func(kin_tree, base_frame, manip_frame, joint_names=None, position_only=False):
     jacobian = get_sym_jacobian(kin_tree, base_frame, manip_frame, position_only)
     joint_symbols = map(Symbol, joint_names)
     func = theano_function(joint_symbols, [jacobian])

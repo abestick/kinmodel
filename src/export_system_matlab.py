@@ -23,9 +23,17 @@ def grip_point(points):
 
 
 HOME = expanduser("~")
+HOMEJ = HOME + '/jacs'
 names = ['rob', 'andrea', 'sarah']
 load = False
 sys.setrecursionlimit(sys.getrecursionlimit()*1000)
+
+
+model_map = {
+    'participant_0' : ('andrea', True),
+    'participant_1' : ('rob', False),
+    'participant_2' : ('sarah', False)
+}
 
 
 if load:
@@ -43,22 +51,22 @@ else:
 
     object_frame_tracker = KinematicTreeExternalFrameTracker(object_kin_tree)
     robot_indices, robot_points = object_frame_tracker.attach_frame('base', 'robot')
-    grip_indices, grip_points = object_frame_tracker.attach_frame('joint_3', 'grip')
+    grip_indices, grip_points = object_frame_tracker.attach_shared_frame('joint_3', 'grip')
 
-    for i, name in enumerate([]):#names):
+    for out_name, (name, flip) in model_map.items():#names):
         human_kin_tree = KinematicTree(json_filename=HOME + '/experiment/%s/%s.json' % (name, name)).to_1d_chain()
         human_frame_tracker = KinematicTreeExternalFrameTracker(human_kin_tree)
         human_indices, human_points = human_frame_tracker.attach_frame('base', 'human')
-        human_frame_tracker.attach_frame('elbow', 'grip')
+        human_frame_tracker.attach_shared_frame('elbow', 'grip', flip=flip)
 
         print('Creating Human Kinematic Model')
         human_jacobian = get_sym_body_jacobian(human_kin_tree, 'grip')
 
         print('Saving..')
-        dill.dump(human_jacobian, open(HOME + "/human_jac_%d.d" % i, "wb"))
+        dill.dump(human_jacobian, open(HOMEJ + "/%s_jac.d" % out_name, "wb"))
 
         print('Printing to Matlab')
-        matlab_file = open(HOME + "/human_jac_%d.m" % i, "wb")
+        matlab_file = open(HOMEJ + "/%s_jac.m" % out_name, "wb")
         matlab_string = octave_code(human_jacobian, assign_to='B')
         matlab_file.write(matlab_string)
 
@@ -66,27 +74,27 @@ else:
     object_jacobian = get_sym_body_jacobian(object_kin_tree, 'grip')
 
     print('Saving..')
-    dill.dump(object_jacobian, open(HOME + "/obj_jac2.d", "wb"))
+    dill.dump(object_jacobian, open(HOMEJ + "/obj_jac.d", "wb"))
 
     print('Printing to Matlab')
-    matlab_file = open(HOME + "/obj_jac2.m", "wb")
+    matlab_file = open(HOMEJ + "/obj_jac.m", "wb")
     matlab_string = octave_code(object_jacobian, assign_to='B')
     matlab_file.write(matlab_string)
 
-    # print('Creating B(x) Matrix')
-    print('Inverting')
-    pinv_obj = left_pinv(object_jacobian)
-    # print('Multiplying')
-    # mult = pinv_obj*human_jacobian
-    # input_matrix = Matrix.vstack(eye(4), mult)
-    #
-    print('Saving')
-    dill.dump(pinv_obj, open(HOME + "/pinv_obj_jac.d", "wb"))
-    #
-    print('Printing to Matlab')
-    matlab_file = open(HOME + "/input_matrix.m", "wb")
-    matlab_string = octave_code(pinv_obj, assign_to='B')
-    matlab_file.write(matlab_string)
-    matlab_file.close()
+    # # print('Creating B(x) Matrix')
+    # print('Inverting')
+    # pinv_obj = left_pinv(object_jacobian)
+    # # print('Multiplying')
+    # # mult = pinv_obj*human_jacobian
+    # # input_matrix = Matrix.vstack(eye(4), mult)
+    # #
+    # print('Saving')
+    # dill.dump(pinv_obj, open(HOME + "/pinv_obj_jac.d", "wb"))
+    # #
+    # print('Printing to Matlab')
+    # matlab_file = open(HOME + "/input_matrix.m", "wb")
+    # matlab_string = octave_code(pinv_obj, assign_to='B')
+    # matlab_file.write(matlab_string)
+    # matlab_file.close()
 
     print('Done')

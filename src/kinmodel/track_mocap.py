@@ -724,6 +724,34 @@ class KinematicTreeExternalFrameTracker(FrameTracker):
 
         return link_indices, (pose.inv().homog().dot(np.vstack((link_points.T, np.ones(link_points.shape[0])))))[:3, :].T
 
+    def attach_shared_frame(self, joint_name, frame_name, tf_pub=False, flip=False):
+        # Attach a static frame to the tree
+        self._kin_tree._pox_stale = True
+        self._kin_tree._dpox_stale = True
+        joints = self._kin_tree.get_joints()
+        link_points = np.empty((0, 3))
+        link_indices = []
+        for point in joints[joint_name].children:
+            try:
+                link_points = np.vstack((link_points, point.primitive.q().squeeze()))
+                link_indices.append(int(point.name.split('_')[-1]))
+                print(point.name)
+                # trans = trans + point.primitive.q().squeeze()
+                # num_points += 1
+            except AttributeError:
+                pass  # This feature isn't a Point
+
+        homog = determine_link_coordinate_transform(link_points, flip=flip)
+        pose = kinmodel.Transform(homog_array=homog)
+
+        new_feature = kinmodel.Feature(frame_name, pose)
+        joints[joint_name].children.append(new_feature)
+        self._attached_frame_names.append(frame_name)
+        if tf_pub:
+            self._tf_pub_frame_names.append(frame_name)
+
+        return link_indices, (pose.inv().homog().dot(np.vstack((link_points.T, np.ones(link_points.shape[0])))))[:3, :].T
+
     def attach_tf_frame(self, joint_name, tf_frame_name):
         # Attach reference frame to specified joint
         self.attach_frame(joint_name, '_tf_ref_' + tf_frame_name, tf_pub=True)
@@ -1055,6 +1083,41 @@ def determine_joint_coordinate_transform(link_points, joint):
 
             rotation_matrix = np.vstack((x_axis, y_axis, z_axis)).T
             # origin_in_new_frame = rotation_matrix.dot(origin).reshape((-1, 1))
+
+    homog_transform = np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))
+
+    return homog_transform
+
+
+def determine_link_coordinate_transform(link_points, flip=False):
+    """
+    Defines the link frame as the origin at the mean of the link points, the z axis the normal to the the plane
+    formed by the points and the y axis as the joint axis projected onto this plane.
+    :param link_points:
+    :param joint_twist:
+    :param zero_thresh:
+    :return:
+    """
+    origin, normal = best_fitting_plane(link_points)
+    normal = unit_vector(normal)
+
+    if flip:
+        print('flip')
+
+    y_axis = unit_vector(link_points[0, :] - origin)
+
+    z_axis = (1 - 2*flip) * unit_vector(orthogonal_projection(normal, y_axis))
+
+    assert check_orthogonal(z_axis, y_axis), "Axes are not orthogonal!"
+
+    x_axis = np.cross(y_axis, z_axis)
+    #
+    # if x_axis.dot(origin) > 0:
+    #     z_axis *= -1
+    #     x_axis *= -1
+
+    rotation_matrix = np.vstack((x_axis, y_axis, z_axis)).T
+    # origin_in_new_frame = rotation_matrix.dot(origin).reshape((-1, 1))
 
     homog_transform = np.vstack((np.hstack((rotation_matrix, origin.reshape((-1, 1)))), np.append(np.zeros(3), 1)))
 

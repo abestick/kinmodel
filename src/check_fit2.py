@@ -5,7 +5,7 @@ from sensor_msgs.msg import PointCloud
 from geometry_msgs.msg import Point32
 from std_msgs.msg import Header
 from kinmodel import KinematicTree
-from fit_mocap_data import get_transforms
+from fit_mocap_data import get_base_transforms
 import tf
 
 
@@ -118,8 +118,8 @@ for df_name, json in zip(dfs, jsons):
 
     new_points_human = joints_to_point_clouds(joints, human, 'human')
     new_points_obj = joints_to_point_clouds(obj_joints, obj, 'object')
-    orig_points = get_transforms(orig_points, human, 'human', inv=True)
-    orig_points = get_transforms(orig_points, obj, 'object', inv=True)
+    orig_points = get_base_transforms(orig_points, human, 'human', inv=True)
+    orig_points = get_base_transforms(orig_points, obj, 'object', inv=True)
     human_trans = orig_points.pop('human')
     obj_trans = orig_points.pop('object')
     orig_points = get_point_clouds(orig_points, 'world')

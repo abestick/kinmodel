@@ -6,7 +6,7 @@ import numpy.linalg as la
 import numpy.random as nprand
 import scipy.optimize
 from scipy.linalg import block_diag
-from . import se3
+import se3
 from math import pi, log10, sqrt
 import json
 import random
@@ -438,6 +438,7 @@ class Twist(GeometricPrimitive):
         else:
             self._xi = np.zeros((6, 1)).astype('float64')
 
+        self._xi = np.nan_to_num(self._xi)
         super(Twist, self).__init__(reference_frame, target)
         self._observation_frame = reference_frame if observation_frame is None else observation_frame
         self._reference_point = target if reference_point is None else reference_point
